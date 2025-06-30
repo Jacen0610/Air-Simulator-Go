@@ -30,8 +30,9 @@ const (
 	MsgTypePDC          MessageType = "PDC"            // 预发离港许可
 	MsgTypeDATIS        MessageType = "D_ATIS"         // 数字自动终端信息服务
 
-	MsgTypeFreeText MessageType = "FREE_TEXT" // 自由文本消息
-	MsgTypeLinkTest MessageType = "LINK_TEST" // ACARS 链路测试
+	MsgTypeFreeText MessageType = "FREE_TEXT"       // 自由文本消息
+	MsgTypeLinkTest MessageType = "LINK_TEST"       // ACARS 链路测试
+	MsgTypeAck      MessageType = "ACKNOWLEDGEMENT" // 确认消息
 )
 
 // ACARSBaseMessage 包含了所有 ACARS 报文的通用头部信息
@@ -47,7 +48,7 @@ type ACARSBaseMessage struct {
 type ACARSMessageInterface interface {
 	GetBaseMessage() ACARSBaseMessage
 	GetData() interface{}
-	GetPriority() string // 可以返回字符串表示的优先级
+	GetPriority() Priority // 可以返回字符串表示的优先级
 }
 
 // AircraftFaultData 飞机系统故障数据
@@ -64,6 +65,11 @@ type ATCMessageData struct {
 	ATCMsgType string `json:"atcMsgType"` // ATC消息类型 (例如: "CLEARANCE", "REQUEST", "REPORT")
 	Content    string `json:"content"`    // ATC消息的具体文本内容 (例如: "CLEARED DIRECT ABCDE")
 	Reference  string `json:"reference"`  // 可能的参考信息 (例如: 许可编号)
+}
+
+type AcknowledgementData struct {
+	OriginalMessageID string `json:"originalMessageID"` // 确认的是哪条原始报文的ID
+	Status            string `json:"status"`            // 确认状态 (例如: "RECEIVED", "FAILED")
 }
 
 // CriticalHighPriorityMessage 封装了紧急/高优先级的 ACARS 报文

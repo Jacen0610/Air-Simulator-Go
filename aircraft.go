@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"time"
 )
 
@@ -107,4 +108,39 @@ func (a *Aircraft) GetInfo() string {
 	info += fmt.Sprintf("  剩余燃油: %.2f KG, 消耗率: %.2f KG/H\n", a.FuelRemainingKG, a.FuelConsumptionRateKGPH)
 	info += fmt.Sprintf("  ACARS Enabled: %t, CPDLC Enabled: %t\n", a.ACARSEnabled, a.CPDLCEnabled)
 	return info
+}
+
+func (a *Aircraft) SendMessage(msg ACARSMessageInterface, commsChannel *Channel, gcs *GroundControlCenter) {
+	baseMsg := msg.GetBaseMessage()
+	// 模拟真实的传输时间，这取决于报文大小和信道类型（VHF/SATCOM）
+	// 这里我们用一个固定的值
+	transmissionTime := 300 * time.Millisecond
+
+	// 循环尝试，直到信道可用
+	for {
+		if !commsChannel.IsBusy() {
+			// 步骤 1: 获得信道，并立即标记为繁忙
+			commsChannel.SetBusy(true)
+			log.Printf("✈️  [飞机 %s] 获得信道，开始传输报文 (ID: %s)", a.CurrentFlightID, baseMsg.MessageID)
+
+			// 步骤 2: 模拟数据在空中传输所需的时间
+			time.Sleep(transmissionTime)
+
+			// 步骤 3: 传输完成，报文“到达”地面站。
+			// 我们在一个新的 goroutine 中调用 ProcessMessage，
+			// 这样飞机不需要等待地面站处理完毕，可以立即释放信道。
+			// 这更真实地模拟了“发后不管”的通信模式。
+			log.Printf("📡 [飞机 %s] 报文 (ID: %s) 已送达地面站 [%s]", a.CurrentFlightID, baseMsg.MessageID, gcs.ID)
+			go gcs.ProcessMessage(msg, commsChannel)
+
+			// 步骤 4: 释放信道，让其他飞机可以使用
+			commsChannel.SetBusy(false)
+			log.Printf("📡 [飞机 %s] 传输完成，释放信道。", a.CurrentFlightID, baseMsg.MessageID)
+			return // 成功发送，退出函数
+		}
+
+		// 如果信道繁忙，打印等待信息并稍作等待后重试
+		log.Printf("⏳ [飞机 %s] 信道忙，等待发送报文 (ID: %s)...", a.CurrentFlightID, baseMsg.MessageID)
+		time.Sleep(200 * time.Millisecond) // 等待一小段时间再检查
+	}
 }

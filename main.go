@@ -1,85 +1,55 @@
 package main
 
 import (
-	"fmt"
-	"math/rand"
-	"sync"
+	"log"
 	"time"
 )
 
-// Channel represents the shared ACARS frequency (131.450 MHz).
-// It simulates the busy/idle state of the channel.
-
-// Device represents an aircraft or ground station trying to send data.
-type Device struct {
-	id      int
-	channel *Channel
-	wg      *sync.WaitGroup
-}
-
-// NewDevice creates a new device.
-func NewDevice(id int, ch *Channel, wg *sync.WaitGroup) *Device {
-	return &Device{
-		id:      id,
-		channel: ch,
-		wg:      wg,
-	}
-}
-
-// SendMessage attempts to send a message using CSMA.
-func (d *Device) SendMessage(message string) {
-	defer d.wg.Done()
-
-	maxRetries := 5
-	for retry := 0; retry < maxRetries; retry++ {
-		// 1. Carrier Sense (载波侦听): Check if the channel is busy
-		if !d.channel.IsBusy() {
-			// Channel is idle, attempt to send
-			d.channel.SetBusy(true) // Mark channel as busy for the duration of transmission
-			fmt.Printf("Device %d: Channel clear. Sending '%s'...\n", d.id, message)
-
-			// Simulate transmission time (e.g., for a short ACARS message)
-			// ACARS is 2400 bps. A small message (e.g., 200 bits) would take 200/2400 ~ 80ms
-			time.Sleep(time.Duration(rand.Intn(100)+50) * time.Millisecond) // Simulate 50-150ms transmission
-
-			d.channel.SetBusy(false) // Release the channel
-			fmt.Printf("Device %d: Message '%s' sent. Channel released.\n", d.id, message)
-			return // Message sent successfully
-		}
-
-		// 2. Channel is busy, perform random back-off (随机回退)
-		backoffTime := time.Duration(rand.Intn(500)+100) * time.Millisecond // Random back-off between 100-600ms
-		fmt.Printf("Device %d: Channel busy. Retrying in %v (retry %d/%d)...\n", d.id, backoffTime, retry+1, maxRetries)
-		time.Sleep(backoffTime)
-	}
-	fmt.Printf("Device %d: Failed to send message '%s' after %d retries.\n", d.id, message, maxRetries)
-}
-
 func main() {
-	fmt.Println("--- Simulating ACARS CSMA Channel ---")
-	fmt.Println("Shared frequency: 131.450 MHz (abstracted)")
+	log.SetFlags(log.Ltime | log.Lmicroseconds)
+	log.Println("--- ACARS 模拟: 包含 ACK 信道争用的双向通信 ---")
 
-	channel := &Channel{isBusy: false}
-	var wg sync.WaitGroup
-	rand.Seed(time.Now().UnixNano()) // Initialize random seed
+	// 1. 创建一个所有参与者共享的通信信道
+	vhfChannel := &Channel{}
 
-	// Create multiple devices (aircraft/ground stations)
-	numDevices := 5
-	messages := []string{
-		"Flight A: Out Time",
-		"Flight B: Engine Status",
-		"Flight C: Fuel Report",
-		"Flight D: ATIS Request",
-		"Flight E: Position Report",
+	// 2. 实例化地面控制中心
+	groundStation := NewGroundControlCenter("ZBAA_GND")
+
+	// 3. 实例化两架飞机
+	aircraft1 := NewAircraft("B-1234", "B-1234", "A320", "Airbus", "SN1234", "CCA")
+	aircraft1.CurrentFlightID = "CCA981"
+
+	aircraft2 := NewAircraft("B-5678", "B-5678", "B777", "Boeing", "SN5678", "CSN")
+	aircraft2.CurrentFlightID = "CSN310"
+
+	// --- 模拟场景: 两架飞机几乎同时发送报文，观察地面站 ACK 的发送时机 ---
+
+	// 4. 飞机1 (CCA981) 准备发送位置报告
+	posReportData1 := PositionReportData{Latitude: 39.9, Longitude: 116.3}
+	baseMsg1 := ACARSBaseMessage{
+		AircraftICAOAddress: aircraft1.ICAOAddress,
+		FlightID:            aircraft1.CurrentFlightID,
+		MessageID:           "CCA981-POS-001",
 	}
+	posMessage1, _ := NewHighMediumPriorityMessage(baseMsg1, posReportData1)
 
-	for i := 0; i < numDevices; i++ {
-		wg.Add(1)
-		device := NewDevice(i+1, channel, &wg)
-		go device.SendMessage(messages[i])
+	// 5. 飞机2 (CSN310) 准备发送发动机报告
+	engineData2 := EngineReportData{EngineID: 1, N1RPM: 85.5}
+	baseMsg2 := ACARSBaseMessage{
+		AircraftICAOAddress: aircraft2.ICAOAddress,
+		FlightID:            aircraft2.CurrentFlightID,
+		MessageID:           "CSN310-ENG-001",
 	}
+	engineMessage2, _ := NewMediumLowPriorityMessage(baseMsg2, engineData2)
 
-	// Wait for all devices to finish sending their messages
-	wg.Wait()
-	fmt.Println("--- Simulation finished ---")
+	// 6. 让两架飞机并发地尝试发送报文
+	go aircraft1.SendMessage(posMessage1, vhfChannel, groundStation)
+	// 稍微错开一点时间，让竞争更有趣
+	time.Sleep(50 * time.Millisecond)
+	go aircraft2.SendMessage(engineMessage2, vhfChannel, groundStation)
+
+	// 7. 主程序等待足够长的时间，以观察完整的来回通信
+	log.Println("--- 主程序等待5秒以观察完整的双向通信和信道竞争 ---")
+	time.Sleep(5 * time.Second)
+	log.Println("--- 模拟结束 ---")
 }
