@@ -6,6 +6,7 @@ import (
 	"log"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -40,7 +41,13 @@ type Aircraft struct {
 
 	// --- 通信与状态管理 ---
 	inboundQueue chan ACARSMessageInterface // 自己的消息收件箱
-	ackWaiters   sync.Map                   // 用于存储正在等待 ACK 的消息, key: messageID, value: chan bool
+	ackWaiters   sync.Map
+
+	// --- 通信统计 ---
+	totalTxAttempts uint64 // 总传输尝试次数 (每次尝试获得信道)
+	totalCollisions uint64 // 碰撞/信道访问失败次数
+	successfulTx    uint64 // 成功发送并收到ACK的报文总数
+	totalRetries    uint64 // 总重传次数
 }
 
 // NewAircraft 创建一个航空器实例的构造函数
@@ -68,7 +75,6 @@ func (a *Aircraft) StartListening(commsChannel *Channel) {
 		if msg.GetBaseMessage().Type != MsgTypeAck {
 			continue
 		}
-		log.Printf("📨 [飞机 %s] 收到 ACK 报文 (ID: %s)，正在处理...", a.CurrentFlightID, msg.GetBaseMessage().MessageID)
 		// 尝试解析 ACK 数据
 		var ackData AcknowledgementData
 		// GetData() 返回的是 json.RawMessage，需要先转换
@@ -91,31 +97,45 @@ func (a *Aircraft) StartListening(commsChannel *Channel) {
 
 type PriorityPMap map[Priority]float64
 
+const (
+	TransmissionTime = 80 * time.Millisecond
+	AckTimeout       = 3000 * time.Millisecond
+	MaxRetries       = 16
+)
+
 // SendMessage 实现了一个带 p-坚持 CSMA 和 ACK/重传机制的完整发送流程。
 func (a *Aircraft) SendMessage(msg ACARSMessageInterface, commsChannel *Channel, pMap PriorityPMap, timeSlot time.Duration) {
 	baseMsg := msg.GetBaseMessage()
 	p := pMap[msg.GetPriority()]
-	transmissionTime := 80 * time.Millisecond
-	ackTimeout := 3000 * time.Millisecond
-	maxRetries := 16
 
-	for retries := 0; retries < maxRetries; retries++ {
-		log.Printf("🚀 [飞机 %s] 准备发送报文 (ID: %s), 尝试次数: %d/%d", a.CurrentFlightID, baseMsg.MessageID, retries+1, maxRetries)
-
+	for retries := 0; retries < MaxRetries; retries++ {
+		log.Printf("🚀 [飞机 %s] 准备发送报文 (ID: %s), 尝试次数: %d/%d", a.CurrentFlightID, baseMsg.MessageID, retries+1, MaxRetries)
+		if retries > 0 {
+			// 这是一个重传
+			atomic.AddUint64(&a.totalRetries, 1) // <-- 统计点：记录重传
+		}
 		// 1. 执行 p-坚持 CSMA 算法来获得发送机会
 		for {
+
+			atomic.AddUint64(&a.totalTxAttempts, 1)
+
 			if !commsChannel.IsBusy() {
 				// 信道空闲，根据概率 p 决定是否发送
 				if rand.Float64() < p {
 					// 成功掷骰子，尝试发送
-					if commsChannel.AttemptTransmit(msg, a.CurrentFlightID, transmissionTime) {
+					if commsChannel.AttemptTransmit(msg, a.CurrentFlightID, TransmissionTime) {
 						goto waitForAck // 发送已开始，跳出循环去等待 ACK
 					}
 					// 如果 AttemptTransmit 失败（极小概率的竞态），则继续循环
 				} else {
+
 					log.Printf("🤔 [飞机 %s] 信道空闲，但决定延迟 (p=%.2f)。等待下一个时隙...", a.CurrentFlightID, p)
 				}
 			} else {
+
+				// 信道忙，这是一次明确的碰撞
+				atomic.AddUint64(&a.totalCollisions, 1)
+
 				log.Printf("⏳ [飞机 %s] 信道忙，持续监听...", a.CurrentFlightID)
 			}
 			// 等待一个时隙后重试
@@ -130,11 +150,13 @@ func (a *Aircraft) SendMessage(msg ACARSMessageInterface, commsChannel *Channel,
 		select {
 		case <-ackChan:
 			// 成功收到 ACK
+			atomic.AddUint64(&a.successfulTx, 1)
+
 			a.ackWaiters.Delete(baseMsg.MessageID) // 清理等待者
 			log.Printf("✅ [飞机 %s] 报文 (ID: %s) 发送流程完成！", a.CurrentFlightID, baseMsg.MessageID)
 			return // 任务完成，退出函数
 
-		case <-time.After(ackTimeout):
+		case <-time.After(AckTimeout):
 			// ACK 超时
 			a.ackWaiters.Delete(baseMsg.MessageID) // 清理等待者
 			log.Printf("⏰ [飞机 %s] 等待报文 (ID: %s) 的 ACK 超时！准备重发...", a.CurrentFlightID, baseMsg.MessageID)
@@ -203,4 +225,28 @@ func (a *Aircraft) GetInfo() string {
 	info += fmt.Sprintf("  剩余燃油: %.2f KG, 消耗率: %.2f KG/H\n", a.FuelRemainingKG, a.FuelConsumptionRateKGPH)
 	info += fmt.Sprintf("  ACARS Enabled: %t, CPDLC Enabled: %t\n", a.ACARSEnabled, a.CPDLCEnabled)
 	return info
+}
+
+// GetCommunicationStats 计算并返回一个包含通信统计信息的可读字符串。
+func (a *Aircraft) GetCommunicationStats() string {
+	// 使用 atomic.LoadUint64 来安全地读取计数值
+	attempts := atomic.LoadUint64(&a.totalTxAttempts)
+	collisions := atomic.LoadUint64(&a.totalCollisions)
+	successes := atomic.LoadUint64(&a.successfulTx)
+	retries := atomic.LoadUint64(&a.totalRetries)
+
+	var collisionRate float64
+	if attempts > 0 {
+		collisionRate = (float64(collisions) / float64(attempts)) * 100
+	}
+
+	stats := fmt.Sprintf("--- 通信统计 for 飞机 %s ---\n", a.CurrentFlightID)
+	stats += fmt.Sprintf("  - 成功发送报文数: %d\n", successes)
+	stats += fmt.Sprintf("  - 总传输尝试次数: %d\n", attempts)
+	stats += fmt.Sprintf("  - 碰撞/信道访问失败次数: %d\n", collisions)
+	stats += fmt.Sprintf("  - 总重传次数: %d\n", retries)
+	stats += fmt.Sprintf("  - 碰撞率 (失败/尝试): %.2f%%\n", collisionRate)
+	stats += "--------------------------------------\n"
+
+	return stats
 }
