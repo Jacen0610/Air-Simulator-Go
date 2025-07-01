@@ -1,3 +1,4 @@
+// C:/workspace/go/Air-Simulator-Go/main.go
 package main
 
 import (
@@ -7,49 +8,49 @@ import (
 
 func main() {
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
-	log.Println("--- ACARS 模拟: 包含 ACK 信道争用的双向通信 ---")
+	log.Println("--- ACARS 模拟: 发送方驱动的 ACK/重传机制 ---")
 
-	// 1. 创建一个所有参与者共享的通信信道
-	vhfChannel := &Channel{}
+	// 1. 定义 p-坚持算法的参数
+	priorityPValues := PriorityPMap{
+		CriticalPriority: 0.8,
+		HighPriority:     0.5,
+		MediumPriority:   0.2,
+		LowPriority:      0.1,
+	}
+	const timeSlot = 50 * time.Millisecond
 
-	// 2. 实例化地面控制中心
+	// 2. 创建通信信道并启动其调度服务
+	vhfChannel := NewChannel()
+	go vhfChannel.StartDispatching()
+
+	// 3. 实例化地面站并启动其监听服务
 	groundStation := NewGroundControlCenter("ZBAA_GND")
+	// 将信道参数传递给地面站的监听器
+	go groundStation.StartListening(vhfChannel, priorityPValues, timeSlot)
 
-	// 3. 实例化两架飞机
+	// 4. 实例化飞机并启动它们的监听服务
 	aircraft1 := NewAircraft("B-1234", "B-1234", "A320", "Airbus", "SN1234", "CCA")
 	aircraft1.CurrentFlightID = "CCA981"
+	go aircraft1.StartListening(vhfChannel) // **新步骤：启动飞机的监听器**
 
-	aircraft2 := NewAircraft("B-5678", "B-5678", "B777", "Boeing", "SN5678", "CSN")
-	aircraft2.CurrentFlightID = "CSN310"
+	// --- 模拟场景: 飞机发送报文并等待 ACK，如果 GCS 繁忙可能会超时 ---
 
-	// --- 模拟场景: 两架飞机几乎同时发送报文，观察地面站 ACK 的发送时机 ---
-
-	// 4. 飞机1 (CCA981) 准备发送位置报告
-	posReportData1 := PositionReportData{Latitude: 39.9, Longitude: 116.3}
-	baseMsg1 := ACARSBaseMessage{
+	// 5. 准备报文
+	posReportData := PositionReportData{Latitude: 39.9, Longitude: 116.3}
+	baseMsg := ACARSBaseMessage{
 		AircraftICAOAddress: aircraft1.ICAOAddress,
 		FlightID:            aircraft1.CurrentFlightID,
 		MessageID:           "CCA981-POS-001",
+		Type:                MsgTypePosition,
 	}
-	posMessage1, _ := NewHighMediumPriorityMessage(baseMsg1, posReportData1)
+	posMessage, _ := NewHighMediumPriorityMessage(baseMsg, posReportData)
 
-	// 5. 飞机2 (CSN310) 准备发送发动机报告
-	engineData2 := EngineReportData{EngineID: 1, N1RPM: 85.5}
-	baseMsg2 := ACARSBaseMessage{
-		AircraftICAOAddress: aircraft2.ICAOAddress,
-		FlightID:            aircraft2.CurrentFlightID,
-		MessageID:           "CSN310-ENG-001",
-	}
-	engineMessage2, _ := NewMediumLowPriorityMessage(baseMsg2, engineData2)
+	// 6. 让飞机发送报文
+	// 注意：SendMessage 现在需要信道参数
+	go aircraft1.SendMessage(posMessage, vhfChannel, priorityPValues, timeSlot)
 
-	// 6. 让两架飞机并发地尝试发送报文
-	go aircraft1.SendMessage(posMessage1, vhfChannel, groundStation)
-	// 稍微错开一点时间，让竞争更有趣
-	time.Sleep(50 * time.Millisecond)
-	go aircraft2.SendMessage(engineMessage2, vhfChannel, groundStation)
-
-	// 7. 主程序等待足够长的时间，以观察完整的来回通信
-	log.Println("--- 主程序等待5秒以观察完整的双向通信和信道竞争 ---")
-	time.Sleep(5 * time.Second)
+	// 7. 主程序等待足够长的时间以观察完整的交互，包括可能的重传
+	log.Println("--- 主程序等待10秒以观察 ACK/超时/重传 ---")
+	time.Sleep(10 * time.Second)
 	log.Println("--- 模拟结束 ---")
 }

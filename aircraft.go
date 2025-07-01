@@ -1,8 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
+	"sync"
 	"time"
 )
 
@@ -33,7 +36,11 @@ type Aircraft struct {
 	ACARSEnabled          bool   `json:"acarsEnabled"`          // 是否启用 ACARS 功能
 	CPDLCEnabled          bool   `json:"cpdlcEnabled"`          // 是否启用 CPDLC 功能
 	SatelliteCommsEnabled bool   `json:"satelliteCommsEnabled"` // 是否启用卫星通信
-	SoftwareVersion       string `json:"softwareVersion"`       // 机载系统软件版本
+	SoftwareVersion       string `json:"softwareVersion"`
+
+	// --- 通信与状态管理 ---
+	inboundQueue chan ACARSMessageInterface // 自己的消息收件箱
+	ackWaiters   sync.Map                   // 用于存储正在等待 ACK 的消息, key: messageID, value: chan bool
 }
 
 // NewAircraft 创建一个航空器实例的构造函数
@@ -46,8 +53,96 @@ func NewAircraft(icaoAddr, reg, aircraftType, manufacturer, serialNum, airlineCo
 		SerialNumber:            serialNum,
 		AirlineICAOCode:         airlineCode,
 		EngineStatus:            make(map[int]*EngineReportData), // 初始化 Map
-		LastDataReportTimestamp: time.Now(),                      // 初始时间
+		LastDataReportTimestamp: time.Now(),
+		inboundQueue:            make(chan ACARSMessageInterface, 20), // 初始化收件箱
+		ackWaiters:              sync.Map{},                           // 初始时间
 	}
+}
+
+func (a *Aircraft) StartListening(commsChannel *Channel) {
+	commsChannel.RegisterListener(a.inboundQueue)
+	log.Printf("✈️  [飞机 %s] 的通信系统已启动，开始监听信道...", a.CurrentFlightID)
+
+	for msg := range a.inboundQueue {
+		// 只关心 ACK 报文
+		if msg.GetBaseMessage().Type != MsgTypeAck {
+			continue
+		}
+		log.Printf("📨 [飞机 %s] 收到 ACK 报文 (ID: %s)，正在处理...", a.CurrentFlightID, msg.GetBaseMessage().MessageID)
+		// 尝试解析 ACK 数据
+		var ackData AcknowledgementData
+		// GetData() 返回的是 json.RawMessage，需要先转换
+		if rawData, ok := msg.GetData().(json.RawMessage); ok {
+			if err := json.Unmarshal(rawData, &ackData); err != nil {
+				continue // 解析失败，忽略
+			}
+		} else {
+			continue
+		}
+
+		// 检查这个 ACK 是否是我们正在等待的
+		if waiterChan, ok := a.ackWaiters.Load(ackData.OriginalMessageID); ok {
+			log.Printf("🎉 [飞机 %s] 成功收到对报文 %s 的 ACK!", a.CurrentFlightID, ackData.OriginalMessageID)
+			// 发送信号，通知等待的 goroutine
+			waiterChan.(chan bool) <- true
+		}
+	}
+}
+
+type PriorityPMap map[Priority]float64
+
+// SendMessage 实现了一个带 p-坚持 CSMA 和 ACK/重传机制的完整发送流程。
+func (a *Aircraft) SendMessage(msg ACARSMessageInterface, commsChannel *Channel, pMap PriorityPMap, timeSlot time.Duration) {
+	baseMsg := msg.GetBaseMessage()
+	p := pMap[msg.GetPriority()]
+	transmissionTime := 80 * time.Millisecond
+	ackTimeout := 3000 * time.Millisecond
+	maxRetries := 16
+
+	for retries := 0; retries < maxRetries; retries++ {
+		log.Printf("🚀 [飞机 %s] 准备发送报文 (ID: %s), 尝试次数: %d/%d", a.CurrentFlightID, baseMsg.MessageID, retries+1, maxRetries)
+
+		// 1. 执行 p-坚持 CSMA 算法来获得发送机会
+		for {
+			if !commsChannel.IsBusy() {
+				// 信道空闲，根据概率 p 决定是否发送
+				if rand.Float64() < p {
+					// 成功掷骰子，尝试发送
+					if commsChannel.AttemptTransmit(msg, a.CurrentFlightID, transmissionTime) {
+						goto waitForAck // 发送已开始，跳出循环去等待 ACK
+					}
+					// 如果 AttemptTransmit 失败（极小概率的竞态），则继续循环
+				} else {
+					log.Printf("🤔 [飞机 %s] 信道空闲，但决定延迟 (p=%.2f)。等待下一个时隙...", a.CurrentFlightID, p)
+				}
+			} else {
+				log.Printf("⏳ [飞机 %s] 信道忙，持续监听...", a.CurrentFlightID)
+			}
+			// 等待一个时隙后重试
+			time.Sleep(timeSlot)
+		}
+
+	waitForAck:
+		// 2. 等待 ACK 或超时
+		ackChan := make(chan bool, 1)
+		a.ackWaiters.Store(baseMsg.MessageID, ackChan)
+
+		select {
+		case <-ackChan:
+			// 成功收到 ACK
+			a.ackWaiters.Delete(baseMsg.MessageID) // 清理等待者
+			log.Printf("✅ [飞机 %s] 报文 (ID: %s) 发送流程完成！", a.CurrentFlightID, baseMsg.MessageID)
+			return // 任务完成，退出函数
+
+		case <-time.After(ackTimeout):
+			// ACK 超时
+			a.ackWaiters.Delete(baseMsg.MessageID) // 清理等待者
+			log.Printf("⏰ [飞机 %s] 等待报文 (ID: %s) 的 ACK 超时！准备重发...", a.CurrentFlightID, baseMsg.MessageID)
+			// 让 for 循环继续，进入下一次重试
+		}
+	}
+
+	log.Printf("❌ [飞机 %s] 报文 (ID: %s) 发送失败，已达到最大重试次数。", a.CurrentFlightID, baseMsg.MessageID)
 }
 
 // UpdatePosition 更新航空器的位置信息
@@ -108,39 +203,4 @@ func (a *Aircraft) GetInfo() string {
 	info += fmt.Sprintf("  剩余燃油: %.2f KG, 消耗率: %.2f KG/H\n", a.FuelRemainingKG, a.FuelConsumptionRateKGPH)
 	info += fmt.Sprintf("  ACARS Enabled: %t, CPDLC Enabled: %t\n", a.ACARSEnabled, a.CPDLCEnabled)
 	return info
-}
-
-func (a *Aircraft) SendMessage(msg ACARSMessageInterface, commsChannel *Channel, gcs *GroundControlCenter) {
-	baseMsg := msg.GetBaseMessage()
-	// 模拟真实的传输时间，这取决于报文大小和信道类型（VHF/SATCOM）
-	// 这里我们用一个固定的值
-	transmissionTime := 300 * time.Millisecond
-
-	// 循环尝试，直到信道可用
-	for {
-		if !commsChannel.IsBusy() {
-			// 步骤 1: 获得信道，并立即标记为繁忙
-			commsChannel.SetBusy(true)
-			log.Printf("✈️  [飞机 %s] 获得信道，开始传输报文 (ID: %s)", a.CurrentFlightID, baseMsg.MessageID)
-
-			// 步骤 2: 模拟数据在空中传输所需的时间
-			time.Sleep(transmissionTime)
-
-			// 步骤 3: 传输完成，报文“到达”地面站。
-			// 我们在一个新的 goroutine 中调用 ProcessMessage，
-			// 这样飞机不需要等待地面站处理完毕，可以立即释放信道。
-			// 这更真实地模拟了“发后不管”的通信模式。
-			log.Printf("📡 [飞机 %s] 报文 (ID: %s) 已送达地面站 [%s]", a.CurrentFlightID, baseMsg.MessageID, gcs.ID)
-			go gcs.ProcessMessage(msg, commsChannel)
-
-			// 步骤 4: 释放信道，让其他飞机可以使用
-			commsChannel.SetBusy(false)
-			log.Printf("📡 [飞机 %s] 传输完成，释放信道。", a.CurrentFlightID, baseMsg.MessageID)
-			return // 成功发送，退出函数
-		}
-
-		// 如果信道繁忙，打印等待信息并稍作等待后重试
-		log.Printf("⏳ [飞机 %s] 信道忙，等待发送报文 (ID: %s)...", a.CurrentFlightID, baseMsg.MessageID)
-		time.Sleep(200 * time.Millisecond) // 等待一小段时间再检查
-	}
 }
