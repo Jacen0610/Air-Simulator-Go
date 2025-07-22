@@ -1,4 +1,4 @@
-package main
+package simulation
 
 import (
 	"encoding/json"
@@ -44,10 +44,13 @@ type Aircraft struct {
 	ackWaiters   sync.Map
 
 	// --- 通信统计 ---
-	totalTxAttempts uint64 // 总传输尝试次数 (每次尝试获得信道)
-	totalCollisions uint64 // 碰撞/信道访问失败次数
-	successfulTx    uint64 // 成功发送并收到ACK的报文总数
-	totalRetries    uint64 // 总重传次数
+	totalTxAttempts   uint64       // 总传输尝试次数
+	totalCollisions   uint64       // 碰撞
+	successfulTx      uint64       // 成功发送并收到ACK的报文总数
+	totalRetries      uint64       // 总重传次数
+	totalRqTunnel     uint64       // 总尝试请求隧道次数
+	totalFailRqTunnel uint64       // 总失败请求隧道次数
+	totalWaitTimeNs   atomic.Int64 // 总等待时间 (纳秒)
 }
 
 // NewAircraft 创建一个航空器实例的构造函数
@@ -97,16 +100,12 @@ func (a *Aircraft) StartListening(commsChannel *Channel) {
 
 type PriorityPMap map[Priority]float64
 
-const (
-	TransmissionTime = 80 * time.Millisecond
-	AckTimeout       = 3000 * time.Millisecond
-	MaxRetries       = 16
-)
-
 // SendMessage 实现了一个带 p-坚持 CSMA 和 ACK/重传机制的完整发送流程。
-func (a *Aircraft) SendMessage(msg ACARSMessageInterface, commsChannel *Channel, pMap PriorityPMap, timeSlot time.Duration) {
+func (a *Aircraft) SendMessage(msg ACARSMessageInterface, commsChannel *Channel, timeSlot time.Duration) {
 	baseMsg := msg.GetBaseMessage()
-	p := pMap[msg.GetPriority()]
+	p := commsChannel.GetPForMessage(msg.GetPriority())
+
+	sendStartTime := time.Now()
 
 	for retries := 0; retries < MaxRetries; retries++ {
 		log.Printf("🚀 [飞机 %s] 准备发送报文 (ID: %s), 尝试次数: %d/%d", a.CurrentFlightID, baseMsg.MessageID, retries+1, MaxRetries)
@@ -116,15 +115,21 @@ func (a *Aircraft) SendMessage(msg ACARSMessageInterface, commsChannel *Channel,
 		}
 		// 1. 执行 p-坚持 CSMA 算法来获得发送机会
 		for {
-
-			atomic.AddUint64(&a.totalTxAttempts, 1)
-
+			atomic.AddUint64(&a.totalRqTunnel, 1)
 			if !commsChannel.IsBusy() {
 				// 信道空闲，根据概率 p 决定是否发送
 				if rand.Float64() < p {
 					// 成功掷骰子，尝试发送
 					if commsChannel.AttemptTransmit(msg, a.CurrentFlightID, TransmissionTime) {
+						waitTime := time.Since(sendStartTime)
+						a.totalWaitTimeNs.Add(waitTime.Nanoseconds())
+						atomic.AddUint64(&a.totalTxAttempts, 1)
 						goto waitForAck // 发送已开始，跳出循环去等待 ACK
+					} else {
+						// 发送失败，继续循环
+						atomic.AddUint64(&a.totalTxAttempts, 1)
+						atomic.AddUint64(&a.totalCollisions, 1)
+						log.Printf("⏳ [飞机 %s] 信道忙，尝试发送失败...", a.CurrentFlightID)
 					}
 					// 如果 AttemptTransmit 失败（极小概率的竞态），则继续循环
 				} else {
@@ -132,10 +137,7 @@ func (a *Aircraft) SendMessage(msg ACARSMessageInterface, commsChannel *Channel,
 					log.Printf("🤔 [飞机 %s] 信道空闲，但决定延迟 (p=%.2f)。等待下一个时隙...", a.CurrentFlightID, p)
 				}
 			} else {
-
-				// 信道忙，这是一次明确的碰撞
-				atomic.AddUint64(&a.totalCollisions, 1)
-
+				atomic.AddUint64(&a.totalFailRqTunnel, 1)
 				log.Printf("⏳ [飞机 %s] 信道忙，持续监听...", a.CurrentFlightID)
 			}
 			// 等待一个时隙后重试
@@ -160,7 +162,7 @@ func (a *Aircraft) SendMessage(msg ACARSMessageInterface, commsChannel *Channel,
 			// ACK 超时
 			a.ackWaiters.Delete(baseMsg.MessageID) // 清理等待者
 			log.Printf("⏰ [飞机 %s] 等待报文 (ID: %s) 的 ACK 超时！准备重发...", a.CurrentFlightID, baseMsg.MessageID)
-			// 让 for 循环继续，进入下一次重试
+
 		}
 	}
 
@@ -214,19 +216,6 @@ func (a *Aircraft) UpdateOOOIReport(out, off, on, in time.Time, origin, dest str
 	a.LastDataReportTimestamp = time.Now()
 }
 
-// GetInfo 打印航空器简要信息
-func (a *Aircraft) GetInfo() string {
-	info := fmt.Sprintf("飞机 %s (%s) - %s %s\n", a.Registration, a.ICAOAddress, a.Manufacturer, a.AircraftType)
-	info += fmt.Sprintf("  当前航班: %s, 飞行阶段: %s\n", a.CurrentFlightID, a.CurrentFlightPhase)
-	if a.CurrentPosition != nil {
-		info += fmt.Sprintf("  当前位置: 纬度 %.4f, 经度 %.4f, 高度 %.0fft, 速度 %.0fkt\n",
-			a.CurrentPosition.Latitude, a.CurrentPosition.Longitude, a.CurrentPosition.Altitude, a.CurrentPosition.Speed)
-	}
-	info += fmt.Sprintf("  剩余燃油: %.2f KG, 消耗率: %.2f KG/H\n", a.FuelRemainingKG, a.FuelConsumptionRateKGPH)
-	info += fmt.Sprintf("  ACARS Enabled: %t, CPDLC Enabled: %t\n", a.ACARSEnabled, a.CPDLCEnabled)
-	return info
-}
-
 // GetCommunicationStats 计算并返回一个包含通信统计信息的可读字符串。
 func (a *Aircraft) GetCommunicationStats() string {
 	// 使用 atomic.LoadUint64 来安全地读取计数值
@@ -234,6 +223,12 @@ func (a *Aircraft) GetCommunicationStats() string {
 	collisions := atomic.LoadUint64(&a.totalCollisions)
 	successes := atomic.LoadUint64(&a.successfulTx)
 	retries := atomic.LoadUint64(&a.totalRetries)
+	totalWaitNs := a.totalWaitTimeNs.Load()
+
+	var avgWaitTime time.Duration
+	if successes > 0 {
+		avgWaitTime = time.Duration(totalWaitNs / int64(successes+retries))
+	}
 
 	var collisionRate float64
 	if attempts > 0 {
@@ -246,7 +241,40 @@ func (a *Aircraft) GetCommunicationStats() string {
 	stats += fmt.Sprintf("  - 碰撞/信道访问失败次数: %d\n", collisions)
 	stats += fmt.Sprintf("  - 总重传次数: %d\n", retries)
 	stats += fmt.Sprintf("  - 碰撞率 (失败/尝试): %.2f%%\n", collisionRate)
+
+	stats += fmt.Sprintf("  - 平均等待时间 (成功发送): %v\n", avgWaitTime.Round(time.Millisecond)) // 新增
 	stats += "--------------------------------------\n"
 
 	return stats
+}
+
+func (a *Aircraft) ResetStats() {
+	atomic.StoreUint64(&a.totalTxAttempts, 0)
+	atomic.StoreUint64(&a.totalCollisions, 0)
+	atomic.StoreUint64(&a.successfulTx, 0)
+	atomic.StoreUint64(&a.totalRetries, 0)
+	a.totalWaitTimeNs.Store(0)
+}
+
+// AircraftRawStats Excel自动统计需要以下两个函数
+type AircraftRawStats struct {
+	SuccessfulTx      uint64
+	TotalTxAttempts   uint64
+	TotalCollisions   uint64
+	TotalRetries      uint64
+	TotalRqTunnel     uint64
+	TotalFailRqTunnel uint64
+	TotalWaitTime     time.Duration
+}
+
+func (a *Aircraft) GetRawStats() AircraftRawStats {
+	return AircraftRawStats{
+		SuccessfulTx:      atomic.LoadUint64(&a.successfulTx),
+		TotalTxAttempts:   atomic.LoadUint64(&a.totalTxAttempts),
+		TotalCollisions:   atomic.LoadUint64(&a.totalCollisions),
+		TotalRetries:      atomic.LoadUint64(&a.totalRetries),
+		TotalRqTunnel:     atomic.LoadUint64(&a.totalRqTunnel),
+		TotalFailRqTunnel: atomic.LoadUint64(&a.totalFailRqTunnel),
+		TotalWaitTime:     time.Duration(a.totalWaitTimeNs.Load()),
+	}
 }
