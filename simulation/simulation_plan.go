@@ -88,8 +88,7 @@ var flightPlans = []FlightPlan{
 	//{Type: "Arriving", StartTimeMinutes: 30}, // 新增不超过30的新时间（30≤30）
 }
 
-func RunSimulationSession(wg *sync.WaitGroup, channel *Channel, aircraftList []*Aircraft) {
-	// 为飞行计划分配飞机实例
+func RunSimulationSession(wg *sync.WaitGroup, comms *CommunicationSystem, aircraftList []*Aircraft) {
 	for i := range flightPlans {
 		flightPlans[i].Aircraft = aircraftList[i]
 	}
@@ -98,12 +97,13 @@ func RunSimulationSession(wg *sync.WaitGroup, channel *Channel, aircraftList []*
 	for i := range flightPlans {
 		wg.Add(1)
 		plan := flightPlans[i]
-		go simulateFlight(plan, wg, channel)
+		go simulateFlight(plan, wg, comms)
 	}
 }
 
 // simulateFlight 模拟了单架飞机的完整飞行流程和通信行为
-func simulateFlight(plan FlightPlan, wg *sync.WaitGroup, commsChannel *Channel) {
+func simulateFlight(plan FlightPlan, wg *sync.WaitGroup, comms *CommunicationSystem) {
+
 	defer wg.Done()
 
 	// 1. 等待至预定的飞行计划开始时间
@@ -114,9 +114,9 @@ func simulateFlight(plan FlightPlan, wg *sync.WaitGroup, commsChannel *Channel) 
 	// 2. 根据飞行计划类型执行不同的通信逻辑
 	if plan.Type == "Departing" {
 		// 离港飞机流程
-		sendOOOIMessage(plan.Aircraft, "OUT", time.Now(), commsChannel) // 推出
-		time.Sleep(TaxiTime)                                            // 滑行
-		sendOOOIMessage(plan.Aircraft, "OFF", time.Now(), commsChannel) // 起飞
+		sendOOOIMessage(plan.Aircraft, "OUT", time.Now(), comms) // 推出
+		time.Sleep(TaxiTime)                                     // 滑行
+		sendOOOIMessage(plan.Aircraft, "OFF", time.Now(), comms) // 起飞
 
 		// --- 起飞后5分钟，每分钟发送引擎报告 ---
 		log.Printf("✈️  [飞机 %s] 进入起飞后初始爬升阶段，将持续报告引擎状况...", plan.Aircraft.CurrentFlightID)
@@ -126,7 +126,7 @@ func simulateFlight(plan FlightPlan, wg *sync.WaitGroup, commsChannel *Channel) 
 		for {
 			select {
 			case <-engineReportTicker.C:
-				sendEngineReport(plan.Aircraft, commsChannel)
+				sendEngineReport(plan.Aircraft, comms)
 			case <-engineReportTimer.C:
 				engineReportTicker.Stop()
 				break initialClimbLoop
@@ -148,11 +148,11 @@ func simulateFlight(plan FlightPlan, wg *sync.WaitGroup, commsChannel *Channel) 
 		for {
 			select {
 			case <-posTicker.C:
-				sendPositionReport(plan.Aircraft, commsChannel)
+				sendPositionReport(plan.Aircraft, comms)
 			case <-fuelTicker.C:
-				sendFuelReport(plan.Aircraft, commsChannel)
+				sendFuelReport(plan.Aircraft, comms)
 			case <-weatherTicker.C:
-				sendWeatherReport(plan.Aircraft, commsChannel)
+				sendWeatherReport(plan.Aircraft, comms)
 			case <-flightTimer.C:
 				break flightLoopDepart
 			}
@@ -162,7 +162,7 @@ func simulateFlight(plan FlightPlan, wg *sync.WaitGroup, commsChannel *Channel) 
 
 	} else { // Arriving
 		// 进港飞机流程
-		sendPositionReport(plan.Aircraft, commsChannel) // 进入空域时首先报告位置
+		sendPositionReport(plan.Aircraft, comms) // 进入空域时首先报告位置
 
 		// --- 模拟30分钟的进港飞行，包含多种报告 ---
 		posTicker := time.NewTicker(PosReportInterval)
@@ -178,18 +178,18 @@ func simulateFlight(plan FlightPlan, wg *sync.WaitGroup, commsChannel *Channel) 
 		for {
 			select {
 			case <-posTicker.C:
-				sendPositionReport(plan.Aircraft, commsChannel)
+				sendPositionReport(plan.Aircraft, comms)
 			case <-fuelTicker.C:
-				sendFuelReport(plan.Aircraft, commsChannel)
+				sendFuelReport(plan.Aircraft, comms)
 			case <-weatherTicker.C:
-				sendWeatherReport(plan.Aircraft, commsChannel)
+				sendWeatherReport(plan.Aircraft, comms)
 			case <-flightTimer.C:
 				break flightLoopArrive
 			}
 		}
 
 		onTime := time.Now()
-		sendOOOIMessage(plan.Aircraft, "ON", onTime, commsChannel) // 降落
+		sendOOOIMessage(plan.Aircraft, "ON", onTime, comms) // 降落
 
 		// --- 降落后5分钟，每分钟发送引擎报告 ---
 		log.Printf("🛬 [飞机 %s] 完成降落，将持续报告引擎反推及冷却状况...", plan.Aircraft.CurrentFlightID)
@@ -199,22 +199,22 @@ func simulateFlight(plan FlightPlan, wg *sync.WaitGroup, commsChannel *Channel) 
 		for {
 			select {
 			case <-engineReportTicker.C:
-				sendEngineReport(plan.Aircraft, commsChannel)
+				sendEngineReport(plan.Aircraft, comms)
 			case <-engineReportTimer.C:
 				engineReportTicker.Stop()
 				break landingRollLoop
 			}
 		}
 
-		time.Sleep(TaxiTime)                                       // 滑行至停机位
-		sendOOOIMessage(plan.Aircraft, "IN", onTime, commsChannel) // 到达
+		time.Sleep(TaxiTime)                                // 滑行至停机位
+		sendOOOIMessage(plan.Aircraft, "IN", onTime, comms) // 到达
 
 		log.Printf("🛬 [飞机 %s] 已成功降落并抵达停机位。飞行计划结束。", plan.Aircraft.CurrentFlightID)
 	}
 }
 
 // sendEngineReport 是一个创建并发送引擎报告的辅助函数
-func sendEngineReport(a *Aircraft, commsChannel *Channel) {
+func sendEngineReport(a *Aircraft, comms *CommunicationSystem) {
 	log.Printf("📡 [飞机 %s] 准备发送引擎报告...", a.CurrentFlightID)
 	// 创建虚拟数据
 	engineData := EngineReportData{
@@ -233,12 +233,13 @@ func sendEngineReport(a *Aircraft, commsChannel *Channel) {
 		Type:                MsgTypeEngineReport,
 	}
 	// 引擎报告通常为中低优先级
-	msg, _ := NewMediumLowPriorityMessage(baseMsg, engineData)
-	go a.SendMessage(msg, commsChannel, TimeSlot)
+	msg, _ := NewMediumPriorityMessage(baseMsg, engineData)
+	dynamicTimeSlot := comms.GetCurrentTimeSlot()
+	go a.SendMessage(msg, comms, dynamicTimeSlot)
 }
 
 // sendFuelReport 是一个创建并发送燃油报告的辅助函数
-func sendFuelReport(a *Aircraft, commsChannel *Channel) {
+func sendFuelReport(a *Aircraft, comms *CommunicationSystem) {
 	log.Printf("📡 [飞机 %s] 准备发送燃油报告...", a.CurrentFlightID)
 
 	fuelData := FuelReportData{
@@ -253,12 +254,13 @@ func sendFuelReport(a *Aircraft, commsChannel *Channel) {
 		Type:                MsgTypeFuel,
 	}
 	// 燃油报告通常为高中优先级
-	msg, _ := NewHighMediumPriorityMessage(baseMsg, fuelData)
-	go a.SendMessage(msg, commsChannel, TimeSlot)
+	msg, _ := NewHighPriorityMessage(baseMsg, fuelData)
+	dynamicTimeSlot := comms.GetCurrentTimeSlot()
+	go a.SendMessage(msg, comms, dynamicTimeSlot)
 }
 
 // sendWeatherReport 是一个创建并发送气象报告的辅助函数
-func sendWeatherReport(a *Aircraft, commsChannel *Channel) {
+func sendWeatherReport(a *Aircraft, comms *CommunicationSystem) {
 	log.Printf("📡 [飞机 %s] 准备发送气象报告...", a.CurrentFlightID)
 	// 为气象报告创建一个本地虚拟数据结构
 	type WeatherReportData struct {
@@ -280,12 +282,13 @@ func sendWeatherReport(a *Aircraft, commsChannel *Channel) {
 		Type:                MsgTypeWeather,
 	}
 	// 气象报告通常为较低优先级
-	msg, _ := NewMediumLowPriorityMessage(baseMsg, weatherData)
-	go a.SendMessage(msg, commsChannel, TimeSlot)
+	msg, _ := NewMediumPriorityMessage(baseMsg, weatherData)
+	dynamicTimeSlot := comms.GetCurrentTimeSlot()
+	go a.SendMessage(msg, comms, dynamicTimeSlot)
 }
 
 // sendPositionReport 是一个创建并发送位置报告的辅助函数
-func sendPositionReport(a *Aircraft, commsChannel *Channel) {
+func sendPositionReport(a *Aircraft, comms *CommunicationSystem) {
 	log.Printf("📡 [飞机 %s] 准备发送例行位置报告...", a.CurrentFlightID)
 	posData := PositionReportData{Latitude: 39.9, Longitude: 116.3, Altitude: 35000} // 简化数据
 	baseMsg := ACARSBaseMessage{
@@ -295,12 +298,13 @@ func sendPositionReport(a *Aircraft, commsChannel *Channel) {
 		Type:                MsgTypePosition,
 	}
 	// 位置报告通常为高优先级
-	msg, _ := NewHighMediumPriorityMessage(baseMsg, posData)
-	go a.SendMessage(msg, commsChannel, TimeSlot)
+	msg, _ := NewHighPriorityMessage(baseMsg, posData)
+	dynamicTimeSlot := comms.GetCurrentTimeSlot()
+	go a.SendMessage(msg, comms, dynamicTimeSlot)
 }
 
 // sendOOOIMessage 是一个创建并发送 OOOI 报告的辅助函数
-func sendOOOIMessage(a *Aircraft, oooiType string, eventTime time.Time, commsChannel *Channel) {
+func sendOOOIMessage(a *Aircraft, oooiType string, eventTime time.Time, comms *CommunicationSystem) {
 	log.Printf("📡 [飞机 %s] 准备发送 OOOI 报告: %s", a.CurrentFlightID, oooiType)
 	var oooiData OOOIReportData
 	switch oooiType {
@@ -320,6 +324,7 @@ func sendOOOIMessage(a *Aircraft, oooiType string, eventTime time.Time, commsCha
 		MessageID:           fmt.Sprintf("%s-%s-%d", a.CurrentFlightID, oooiType, time.Now().Unix()),
 		Type:                MsgTypeOOOI,
 	}
-	msg, _ := NewHighMediumPriorityMessage(baseMsg, oooiData)
-	go a.SendMessage(msg, commsChannel, TimeSlot)
+	msg, _ := NewHighPriorityMessage(baseMsg, oooiData)
+	dynamicTimeSlot := comms.GetCurrentTimeSlot()
+	go a.SendMessage(msg, comms, dynamicTimeSlot)
 }

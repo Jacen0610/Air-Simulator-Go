@@ -69,9 +69,9 @@ func NewAircraft(icaoAddr, reg, aircraftType, manufacturer, serialNum, airlineCo
 	}
 }
 
-func (a *Aircraft) StartListening(commsChannel *Channel) {
-	commsChannel.RegisterListener(a.inboundQueue)
-	log.Printf("✈️  [飞机 %s] 的通信系统已启动，开始监听信道...", a.CurrentFlightID)
+func (a *Aircraft) StartListening(comms *CommunicationSystem) {
+	comms.RegisterListener(a.inboundQueue) // 通过管理器注册
+	log.Printf("✈️  [飞机 %s] 的通信系统已启动，开始监听主/备信道...", a.CurrentFlightID)
 
 	for msg := range a.inboundQueue {
 		// 只关心 ACK 报文
@@ -101,68 +101,59 @@ func (a *Aircraft) StartListening(commsChannel *Channel) {
 type PriorityPMap map[Priority]float64
 
 // SendMessage 实现了一个带 p-坚持 CSMA 和 ACK/重传机制的完整发送流程。
-func (a *Aircraft) SendMessage(msg ACARSMessageInterface, commsChannel *Channel, timeSlot time.Duration) {
+func (a *Aircraft) SendMessage(msg ACARSMessageInterface, comms *CommunicationSystem, timeSlot time.Duration) {
 	baseMsg := msg.GetBaseMessage()
-	p := commsChannel.GetPForMessage(msg.GetPriority())
-
 	sendStartTime := time.Now()
 
 	for retries := 0; retries < MaxRetries; retries++ {
 		log.Printf("🚀 [飞机 %s] 准备发送报文 (ID: %s), 尝试次数: %d/%d", a.CurrentFlightID, baseMsg.MessageID, retries+1, MaxRetries)
 		if retries > 0 {
-			// 这是一个重传
-			atomic.AddUint64(&a.totalRetries, 1) // <-- 统计点：记录重传
+			atomic.AddUint64(&a.totalRetries, 1)
 		}
-		// 1. 执行 p-坚持 CSMA 算法来获得发送机会
+
+		// --- 核心修改: 在每次尝试发送前，都动态选择信道 ---
+		targetChannel := comms.SelectChannelForMessage(msg, a.CurrentFlightID)
+		p := targetChannel.GetPForMessage(msg.GetPriority())
+
+		// 1. 在选定的目标信道上执行 p-坚持 CSMA 算法
 		for {
 			atomic.AddUint64(&a.totalRqTunnel, 1)
-			if !commsChannel.IsBusy() {
-				// 信道空闲，根据概率 p 决定是否发送
+			if !targetChannel.IsBusy() {
 				if rand.Float64() < p {
-					// 成功掷骰子，尝试发送
-					if commsChannel.AttemptTransmit(msg, a.CurrentFlightID, TransmissionTime) {
+					if targetChannel.AttemptTransmit(msg, a.CurrentFlightID, TransmissionTime) {
 						waitTime := time.Since(sendStartTime)
 						a.totalWaitTimeNs.Add(waitTime.Nanoseconds())
 						atomic.AddUint64(&a.totalTxAttempts, 1)
-						goto waitForAck // 发送已开始，跳出循环去等待 ACK
+						goto waitForAck
 					} else {
-						// 发送失败，继续循环
 						atomic.AddUint64(&a.totalTxAttempts, 1)
 						atomic.AddUint64(&a.totalCollisions, 1)
-						log.Printf("⏳ [飞机 %s] 信道忙，尝试发送失败...", a.CurrentFlightID)
+						log.Printf("💥 [飞机 %s] 在信道上碰撞！", a.CurrentFlightID)
 					}
-					// 如果 AttemptTransmit 失败（极小概率的竞态），则继续循环
 				} else {
-
 					log.Printf("🤔 [飞机 %s] 信道空闲，但决定延迟 (p=%.2f)。等待下一个时隙...", a.CurrentFlightID, p)
 				}
 			} else {
 				atomic.AddUint64(&a.totalFailRqTunnel, 1)
 				log.Printf("⏳ [飞机 %s] 信道忙，持续监听...", a.CurrentFlightID)
 			}
-			// 等待一个时隙后重试
 			time.Sleep(timeSlot)
 		}
 
 	waitForAck:
-		// 2. 等待 ACK 或超时
+		// 2. 等待 ACK 或超时的逻辑保持不变
 		ackChan := make(chan bool, 1)
 		a.ackWaiters.Store(baseMsg.MessageID, ackChan)
 
 		select {
 		case <-ackChan:
-			// 成功收到 ACK
 			atomic.AddUint64(&a.successfulTx, 1)
-
-			a.ackWaiters.Delete(baseMsg.MessageID) // 清理等待者
+			a.ackWaiters.Delete(baseMsg.MessageID)
 			log.Printf("✅ [飞机 %s] 报文 (ID: %s) 发送流程完成！", a.CurrentFlightID, baseMsg.MessageID)
-			return // 任务完成，退出函数
-
+			return
 		case <-time.After(AckTimeout):
-			// ACK 超时
-			a.ackWaiters.Delete(baseMsg.MessageID) // 清理等待者
+			a.ackWaiters.Delete(baseMsg.MessageID)
 			log.Printf("⏰ [飞机 %s] 等待报文 (ID: %s) 的 ACK 超时！准备重发...", a.CurrentFlightID, baseMsg.MessageID)
-
 		}
 	}
 

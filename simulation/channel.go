@@ -21,6 +21,7 @@ type Channel struct {
 	totalMessagesTransmitted atomic.Uint64
 	totalBusyTime            time.Duration
 	lastBusyTimestamp        time.Time
+	stepBusyTime             atomic.Int64
 
 	// --- 新增: 可动态更新的 p-value 策略 ---
 	pValues      PriorityPMap
@@ -38,8 +39,8 @@ func NewChannel(initialPMap PriorityPMap) *Channel {
 
 // --- 新增: 动态更新和获取策略的方法 ---
 
-// UpdatePValues 允许 RL Agent 动态更新信道的 p-value 策略。
-func (c *Channel) UpdatePValues(newPMap PriorityPMap) {
+// UpdatePMap 安全地更新当前的 p-value 策略。
+func (c *Channel) UpdatePMap(newPMap PriorityPMap) {
 	c.pValuesMutex.Lock()
 	defer c.pValuesMutex.Unlock()
 	c.pValues = newPMap
@@ -52,7 +53,20 @@ func (c *Channel) GetPForMessage(priority Priority) float64 {
 	if p, ok := c.pValues[priority]; ok {
 		return p
 	}
-	return 0.1 // 返回一个安全的默认值
+	return 0.1
+}
+
+func (c *Channel) GetAndResetUtilization(stepDuration time.Duration) float64 {
+	// 原子地读取并重置单步占用时间
+	busyNs := c.stepBusyTime.Swap(0)
+
+	if stepDuration <= 0 {
+		return 0
+	}
+
+	// 计算利用率
+	utilization := float64(busyNs) / float64(stepDuration.Nanoseconds())
+	return utilization * 100 // 返回百分比
 }
 
 // GetTotalBusyTime 安全地返回总占用时间
@@ -92,6 +106,8 @@ func (c *Channel) AttemptTransmit(msg ACARSMessageInterface, senderID string, tr
 		c.isBusy = false
 		busyDuration := time.Since(c.lastBusyTimestamp)
 		c.totalBusyTime += busyDuration
+		// --- 修改: 同时累加到单步占用时间 ---
+		c.stepBusyTime.Add(busyDuration.Nanoseconds())
 		c.mutex.Unlock()
 		log.Printf("⬅️  [%s] 传输完成，释放信道。", senderID)
 	}()
@@ -141,7 +157,7 @@ func (c *Channel) ResetStats() {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	c.totalBusyTime = 0
-
+	c.stepBusyTime.Store(0)
 	c.totalMessagesTransmitted.Store(0)
 }
 

@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+package environment;
+
+option go_package = "/protos";
+
+// RL 环境服务
+service RLEnvironment {
+  // 重置环境并返回初始状态
+  rpc Reset(ResetRequest) returns (State) {}
+  // 执行一个动作，推进环境一步，并返回结果
+  rpc Step(Action) returns (StepResponse) {}
+}
+
+// 动作: 智能体设置的全局参数
+message Action {
+  double p_critical = 1;
+  double p_high = 2;
+  double p_medium = 3;
+  double p_low = 4;
+  double time_slot_ms = 5;
+}
+
+// 状态: 环境反馈给智能体的观察值
+message State {
+  double throughput = 1;
+  double avg_collision_rate = 2;
+  double avg_wait_time_ms = 3;
+  double primary_channel_utilization = 4;
+  double backup_channel_utilization = 5;
+  double total_retries = 6;
+}
+
+// Step 函数的响应
+message StepResponse {
+  State next_state = 1;
+  double reward = 2;
+  bool done = 3; // 整个仿真会话是否结束
+}
+
+// Reset 请求 (可以为空)
+message ResetRequest {}

@@ -88,7 +88,7 @@ func (m CriticalHighPriorityMessage) GetData() interface{} { return m.Data }
 func (m CriticalHighPriorityMessage) GetPriority() Priority { return CriticalPriority }
 
 // 实例化一个高风险的Message
-func NewCriticalHighPriorityMessage(base ACARSBaseMessage, data interface{}) (CriticalHighPriorityMessage, error) {
+func NewCriticalPriorityMessage(base ACARSBaseMessage, data interface{}) (CriticalHighPriorityMessage, error) {
 	rawData, err := json.Marshal(data)
 	if err != nil {
 		return CriticalHighPriorityMessage{}, err
@@ -142,7 +142,7 @@ func (m HighMediumPriorityMessage) GetData() interface{} { return m.Data }
 func (m HighMediumPriorityMessage) GetPriority() Priority { return HighPriority }
 
 // Helper function to create HighMediumPriorityMessage
-func NewHighMediumPriorityMessage(base ACARSBaseMessage, data interface{}) (HighMediumPriorityMessage, error) {
+func NewHighPriorityMessage(base ACARSBaseMessage, data interface{}) (HighMediumPriorityMessage, error) {
 	rawData, err := json.Marshal(data)
 	if err != nil {
 		return HighMediumPriorityMessage{}, err
@@ -203,7 +203,7 @@ func (m MediumLowPriorityMessage) GetData() interface{} { return m.Data }
 func (m MediumLowPriorityMessage) GetPriority() Priority { return MediumPriority }
 
 // Helper function to create MediumLowPriorityMessage
-func NewMediumLowPriorityMessage(base ACARSBaseMessage, data interface{}) (MediumLowPriorityMessage, error) {
+func NewMediumPriorityMessage(base ACARSBaseMessage, data interface{}) (MediumLowPriorityMessage, error) {
 	rawData, err := json.Marshal(data)
 	if err != nil {
 		return MediumLowPriorityMessage{}, err
@@ -242,7 +242,7 @@ func (m LowAuxiliaryPriorityMessage) GetData() interface{} { return m.Data }
 func (m LowAuxiliaryPriorityMessage) GetPriority() Priority { return LowPriority }
 
 // LowAuxiliaryPriorityMessage实例化函数
-func NewLowAuxiliaryPriorityMessage(base ACARSBaseMessage, data interface{}) (LowAuxiliaryPriorityMessage, error) {
+func NewLowPriorityMessage(base ACARSBaseMessage, data interface{}) (LowAuxiliaryPriorityMessage, error) {
 	rawData, err := json.Marshal(data)
 	if err != nil {
 		return LowAuxiliaryPriorityMessage{}, err

@@ -2,68 +2,50 @@
 package main
 
 import (
-	"Air-Simulator/collector"  // 导入新的 collector 包
-	"Air-Simulator/simulation" // 导入新的 simulation 包
-	"fmt"
-	"log"
-	"sync"
+	// 导入您新创建的 environment 包
+	"Air-Simulator/environment"
 	"time"
+
+	// 导入由 .proto 文件生成的 protos 包
+	"Air-Simulator/protos"
+	"google.golang.org/grpc"
+	"log"
+	"math/rand"
+	"net"
 )
 
+// 定义 gRPC 服务器监听的端口
+const grpcPort = ":50051"
+
 func main() {
-	log.Println("=============================================")
-	log.Println("======  Air-Ground Communication Simulation  ======")
-	log.Println("=============================================")
+	// (可选) 设置随机数种子，以便在需要时可以复现仿真结果
+	// 在正式训练时，通常使用变化的种子以增加随机性
+	rand.Seed(time.Now().UnixNano())
 
-	// --- 1. 创建通信信道 ---
-	initialPMap := simulation.PriorityPMap{
-		simulation.CriticalPriority: 0.9,
-		simulation.HighPriority:     0.7,
-		simulation.MediumPriority:   0.4,
-		simulation.LowPriority:      0.2,
+	// 1. 在指定端口上启动TCP监听
+	lis, err := net.Listen("tcp", grpcPort)
+	if err != nil {
+		log.Fatalf("错误：无法在端口 %s 上启动监听: %v", grpcPort, err)
 	}
-	commsChannel := simulation.NewChannel(initialPMap)
-	go commsChannel.StartDispatching()
-	log.Printf("📡 通信信道已创建并启动，时隙: %v", simulation.TimeSlot)
 
-	// --- 2. 创建地面控制中心 ---
-	groundControl := simulation.NewGroundControlCenter("GND_CTL_SEU")
-	go groundControl.StartListening(commsChannel, simulation.TimeSlot)
+	// 2. 创建一个新的 gRPC 服务器实例
+	grpcServer := grpc.NewServer()
 
-	// --- 3. 创建20架飞机 ---
-	aircraftList := make([]*simulation.Aircraft, 20)
-	for i := 0; i < 20; i++ {
-		icao := fmt.Sprintf("A%d", 70000+i)
-		reg := fmt.Sprintf("B-%d", 6000+i)
-		flightID := fmt.Sprintf("CES-%d", 1001+i)
-		aircraft := simulation.NewAircraft(icao, reg, "A320neo", "Airbus", "MSN1234"+fmt.Sprintf("%d", i), "CES")
-		aircraft.CurrentFlightID = flightID
-		aircraftList[i] = aircraft
-		go aircraft.StartListening(commsChannel)
+	// 3. 创建您的环境服务器实例
+	//    NewServer() 函数会负责初始化整个仿真世界
+	rlServer := environment.NewServer(environment.Config{
+		EnableDualChannel: false,
+	})
+
+	// 4. 将您的环境服务注册到 gRPC 服务器上
+	//    这样 gRPC 服务器才知道如何将请求转发给您的 Step 和 Reset 方法
+	protos.RegisterRLEnvironmentServer(grpcServer, rlServer)
+
+	log.Printf("✅ gRPC 强化学习环境服务器已启动，正在监听端口 %s", grpcPort)
+
+	// 5. 启动 gRPC 服务器并开始接受来自Python客户端的连接
+	//    这是一个阻塞操作，程序会一直运行在这里，直到被手动停止
+	if err := grpcServer.Serve(lis); err != nil {
+		log.Fatalf("错误：gRPC 服务器启动失败: %v", err)
 	}
-	log.Printf("✈️  已成功创建 %d 架飞机.", len(aircraftList))
-
-	// --- 4. 启动数据收集器 ---
-	var collectorWg sync.WaitGroup
-	collectorWg.Add(1)
-	doneChan := make(chan struct{})
-
-	dataCollector := collector.NewDataCollector(&collectorWg, doneChan, aircraftList, groundControl, commsChannel)
-	go dataCollector.Run()
-
-	// --- 5. 运行飞行计划模拟 ---
-	log.Println("🛫 开始执行所有飞行计划...")
-	var simWg sync.WaitGroup
-	simulation.RunSimulationSession(&simWg, commsChannel, aircraftList)
-
-	// 等待所有飞行计划完成
-	simWg.Wait()
-	log.Println("✅ 所有飞行计划已执行完毕.")
-	time.Sleep(5 * time.Minute)
-	// --- 6. 停止收集器并等待文件保存 ---
-	log.Println("... 正在停止数据收集器并保存结果 ...")
-	close(doneChan)    // 发送信号，通知收集器停止并保存
-	collectorWg.Wait() // 等待收集器完成最后的保存工作
-
-	log.Println("Simulation finished.")
 }
