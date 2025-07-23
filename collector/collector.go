@@ -2,15 +2,15 @@
 package collector
 
 import (
+	"Air-Simulator/protos" // 新增: 导入 protos 包以访问 Action 结构体
 	"Air-Simulator/simulation"
 	"fmt"
+	"github.com/xuri/excelize/v2"
 	"log"
 	"os"
 	"path/filepath"
 	"strconv"
 	"time"
-
-	"github.com/xuri/excelize/v2"
 )
 
 // DataCollector 结构体现在是会话报告管理器，持有报告生成所需的所有状态。
@@ -26,6 +26,7 @@ type DataCollector struct {
 	groundRow         int
 	primaryChannelRow int
 	backupChannelRow  int
+	actionRow         int // 新增: 用于追踪 Agent 决策的行号
 }
 
 // NewDataCollector 创建一个新的数据收集器实例。
@@ -50,9 +51,11 @@ func (dc *DataCollector) InitializeEpisode() {
 	aircraftSheet := "Aircraft_Periodic_Stats"
 	groundSheet := "GroundControl_Periodic_Stats"
 	primaryChannelSheet := "Channel_Primary_Periodic_Stats"
+	actionSheet := "Agent_Actions" // 新增: Agent 决策工作表
 	dc.excelFile.NewSheet(aircraftSheet)
 	dc.excelFile.NewSheet(groundSheet)
 	dc.excelFile.NewSheet(primaryChannelSheet)
+	dc.excelFile.NewSheet(actionSheet) // 新增
 
 	var backupChannelSheet string
 	if dc.commSystem.BackupChannel != nil {
@@ -74,11 +77,47 @@ func (dc *DataCollector) InitializeEpisode() {
 		_ = dc.excelFile.SetSheetRow(backupChannelSheet, "A1", &headersChannel)
 	}
 
+	// 新增: 写入 Agent 决策的表头
+	headersActions := []string{"时间 (Sim Minutes)", "P_Critical", "P_High", "P_Medium", "P_Low", "TimeSlot (ms)"}
+	_ = dc.excelFile.SetSheetRow(actionSheet, "A1", &headersActions)
+
 	// 初始化行计数器
 	dc.aircraftRow = 2
 	dc.groundRow = 2
 	dc.primaryChannelRow = 2
 	dc.backupChannelRow = 2
+	dc.actionRow = 2 // 新增
+}
+
+// CollectActionData 记录 Agent 在每个时间步做出的决策。
+func (dc *DataCollector) CollectActionData(simMinutes int, action *protos.Action) {
+	if dc.excelFile == nil {
+		log.Println("❌ Collector Error: CollectActionData called before InitializeEpisode.")
+		return
+	}
+	if action == nil {
+		log.Println("❌ Collector Error: CollectActionData called with a nil action.")
+		return
+	}
+
+	timestampStr := strconv.Itoa(simMinutes)
+	actionSheet := "Agent_Actions"
+
+	rowData := []interface{}{
+		timestampStr,
+		action.PCritical,
+		action.PHigh,
+		action.PMedium,
+		action.PLow,
+		action.TimeSlotMs,
+	}
+
+	// 使用 fmt.Sprintf 构造单元格地址，与其他部分保持一致
+	cell := fmt.Sprintf("A%d", dc.actionRow)
+	if err := dc.excelFile.SetSheetRow(actionSheet, cell, &rowData); err != nil {
+		log.Printf("❌ 错误: 无法向 %s 工作表写入 Agent 决策数据: %v", actionSheet, err)
+	}
+	dc.actionRow++
 }
 
 // CollectPeriodicData 在每个5分钟的时间点被调用，用于记录当前系统状态的快照。

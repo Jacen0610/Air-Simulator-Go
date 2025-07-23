@@ -42,9 +42,7 @@ type Server struct {
 func NewServer(config Config) *Server {
 	s := &Server{
 		config: config,
-		simWg:  new(sync.WaitGroup),
 	}
-	s.initializeSimulation()
 	return s
 }
 
@@ -54,7 +52,8 @@ func (s *Server) initializeSimulation() {
 	s.isDone = false
 	s.simDoneChan = make(chan struct{}) // 创建新的信号 channel
 	s.currentSimTimeMinutes = 0         // 重置虚拟时间
-	s.lastStepStats = stepStats{}       // 重置上一步统计
+	s.lastStepStats = stepStats{}
+	s.simWg = &sync.WaitGroup{}
 
 	// ... (创建 pMap, 信道, 通信系统, 地面站, 飞机的代码保持不变) ...
 	initialPMap := simulation.PriorityPMap{
@@ -143,7 +142,10 @@ func (s *Server) Step(ctx context.Context, action *protos.Action) (*protos.StepR
 		// 默认情况：模拟尚未结束，继续正常执行
 	}
 
-	// 1. 应用智能体的动作 (代码保持不变)
+	// 新增: 在应用动作之前，立即记录 Agent 的决策
+	s.collector.CollectActionData(s.currentSimTimeMinutes, action)
+
+	// 1. 应用智能体的动作
 	newPMap := simulation.PriorityPMap{
 		simulation.CriticalPriority: action.PCritical, simulation.HighPriority: action.PHigh,
 		simulation.MediumPriority: action.PMedium, simulation.LowPriority: action.PLow,
@@ -162,7 +164,7 @@ func (s *Server) Step(ctx context.Context, action *protos.Action) (*protos.StepR
 	time.Sleep(stepDuration)
 	s.currentSimTimeMinutes += int(stepDuration.Minutes())
 
-	// 4. --- 新增: 检查是否需要进行周期性数据收集 ---
+	// 4. 检查是否需要进行周期性数据收集
 	if s.currentSimTimeMinutes%5 == 0 && s.currentSimTimeMinutes > 0 {
 		s.collector.CollectPeriodicData(s.currentSimTimeMinutes)
 	}
@@ -199,7 +201,7 @@ func (s *Server) calculateIncrementalMetrics() (*protos.State, float64) {
 
 	// 4. 基于增量指标计算奖励
 	// 这个奖励现在清晰地反映了过去一分钟的表现
-	reward := (1.0 * float64(deltaSuccessfulTx)) - (10.0 * collisionRate) - (0.001 * avgWaitTimeMs) - (0.2 * float64(deltaRetries))
+	reward := (1.0 * float64(deltaSuccessfulTx)) - (100.0 * collisionRate) - (0.005 * avgWaitTimeMs) - (5 * float64(deltaRetries))
 
 	// 5. 组装下一个状态 (状态本身可以是累积的，也可以是增量的，这里使用累积的更稳定)
 	nextState := &protos.State{
