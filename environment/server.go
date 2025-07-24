@@ -187,8 +187,10 @@ func (s *Server) calculateIncrementalMetrics() (*protos.State, float64) {
 	deltaCollisions := currentStats.TotalCollisions - s.lastStepStats.TotalCollisions
 	deltaRetries := currentStats.TotalRetries - s.lastStepStats.TotalRetries
 	deltaWaitTime := currentStats.TotalWaitTime - s.lastStepStats.TotalWaitTime
+	deltaRqTunnel := currentStats.TotalRqTunnel - s.lastStepStats.TotalRqTunnel
+	deltaFailRqTunnel := currentStats.TotalFailRqTunnel - s.lastStepStats.TotalFailRqTunnel
 
-	// 3. 基于增量数据计算指标
+	// 3. 基于增量数据计算关键性能指标 (KPIs)
 	var collisionRate float64
 	if deltaAttempts > 0 {
 		collisionRate = float64(deltaCollisions) / float64(deltaAttempts)
@@ -199,17 +201,71 @@ func (s *Server) calculateIncrementalMetrics() (*protos.State, float64) {
 		avgWaitTimeMs = float64(deltaWaitTime.Milliseconds()) / float64(deltaSuccessfulTx)
 	}
 
-	// 4. 基于增量指标计算奖励
-	// 这个奖励现在清晰地反映了过去一分钟的表现
-	reward := (1.0 * float64(deltaSuccessfulTx)) - (100.0 * collisionRate) - (0.005 * avgWaitTimeMs) - (5 * float64(deltaRetries))
+	var contentionRate float64
+	if deltaRqTunnel > 0 {
+		contentionRate = float64(deltaFailRqTunnel) / float64(deltaRqTunnel)
+	}
 
-	// 5. 组装下一个状态 (状态本身可以是累积的，也可以是增量的，这里使用累积的更稳定)
+	var retryRate float64
+	if deltaSuccessfulTx > 0 {
+		retryRate = float64(deltaRetries) / float64(deltaSuccessfulTx)
+	} else if deltaSuccessfulTx == 0 && deltaRetries > 0 {
+		retryRate = 100.0
+	}
+	// 4. 【核心修改】基于新的权重设计，计算奖励函数
+	// --------------------------------------------------------------------
+
+	// 奖励项 (Reward Term): 提高成功传输的价值，让 Agent 有明确的追求目标。
+	rewardSuccess := 10.0 * float64(deltaSuccessfulTx)
+
+	// 核心惩罚项1: 等待时间 (The Main Penalty)
+	// 将权重从 0.5 大幅提高到 2.0。
+	// 现在，100ms 的平均等待时间会带来 -200 的惩罚，Agent 无法再忽视它。
+	penaltyWaitTime := 0.5 * avgWaitTimeMs
+
+	// 核心惩罚项2: 信道竞争 (The Leading Indicator)
+	// 竞争率是等待时间的前兆。我们将其权重从 200 提高到 300。
+	// 50% 的竞争失败率就会导致 -150 的惩罚。
+	// 这会迫使 Agent 思考如何通过调整 p-value 和 timeslot 来主动管理信道拥堵。
+	penaltyContention := 100.0 * contentionRate
+
+	// 兜底惩罚项: 碰撞 (The Catastrophe Penalty)
+	// 保持一个高的惩罚，作为不可逾越的红线。
+	penaltyCollision := 150.0 * collisionRate
+
+	// 重传惩罚，概率扣分
+	penaltyRetry := 100.0 * retryRate
+
+	// 最终奖励 = 收益 - 全部成本
+	reward := rewardSuccess - penaltyWaitTime - penaltyContention - penaltyCollision - penaltyRetry
+
+	// 增加详细日志，用于调试和分析
+	log.Printf(
+		"Reward Calculation | Reward: %.2f | (Success: +%.2f, WaitPenalty: -%.2f, ContentionPenalty: -%.2f, CollisionPenalty: -%.2f)",
+		reward,
+		rewardSuccess,
+		penaltyWaitTime,
+		penaltyContention,
+		penaltyCollision,
+	)
+	log.Printf(
+		"KPIs for Reward   | AvgWait: %.2fms, ContentionRate: %.2f, CollisionRate: %.2f, SuccessTx: %d",
+		avgWaitTimeMs,
+		contentionRate,
+		collisionRate,
+		deltaSuccessfulTx,
+	)
+
+	// --------------------------------------------------------------------
+
+	// 5. 组装下一个状态
 	nextState := &protos.State{
 		Throughput:                float64(currentStats.TotalSuccessfulTx),
-		AvgCollisionRate:          collisionRate, // 返回的是本步的碰撞率
-		AvgWaitTimeMs:             avgWaitTimeMs, // 返回的是本步的平均等待时间
+		AvgCollisionRate:          collisionRate,
+		AvgWaitTimeMs:             avgWaitTimeMs,
 		PrimaryChannelUtilization: s.commSystem.PrimaryChannel.GetAndResetUtilization(stepDuration),
 		TotalRetries:              float64(currentStats.TotalRetries),
+		ChannelContentionRate:     contentionRate,
 	}
 	if s.commSystem.BackupChannel != nil {
 		nextState.BackupChannelUtilization = s.commSystem.BackupChannel.GetAndResetUtilization(stepDuration)
@@ -228,6 +284,8 @@ type stepStats struct {
 	TotalCollisions   uint64
 	TotalRetries      uint64
 	TotalWaitTime     time.Duration
+	TotalRqTunnel     uint64
+	TotalFailRqTunnel uint64
 }
 
 func (s *Server) collectAllStats() stepStats {
@@ -239,11 +297,15 @@ func (s *Server) collectAllStats() stepStats {
 		totalStats.TotalCollisions += stats.TotalCollisions
 		totalStats.TotalRetries += stats.TotalRetries
 		totalStats.TotalWaitTime += stats.TotalWaitTime
+		totalStats.TotalRqTunnel += stats.TotalRqTunnel
+		totalStats.TotalFailRqTunnel += stats.TotalFailRqTunnel
 	}
 	gcStats := s.groundControl.GetRawStats()
 	totalStats.TotalSuccessfulTx += gcStats.SuccessfulTx
 	totalStats.TotalTxAttempts += gcStats.TotalTxAttempts
 	totalStats.TotalCollisions += gcStats.TotalCollisions
 	totalStats.TotalWaitTime += gcStats.TotalWaitTimeNs
+	totalStats.TotalRqTunnel += gcStats.TotalRqTunnel
+	totalStats.TotalFailRqTunnel += gcStats.TotalFailRqTunnel
 	return totalStats
 }

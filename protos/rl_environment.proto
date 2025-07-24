@@ -29,6 +29,7 @@ message State {
   double primary_channel_utilization = 4;
   double backup_channel_utilization = 5;
   double total_retries = 6;
+  double channel_contention_rate = 7;
 }
 
 // Step 函数的响应

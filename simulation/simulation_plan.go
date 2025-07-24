@@ -14,7 +14,6 @@ type FlightPlan struct {
 }
 
 var flightPlans = []FlightPlan{
-	// 20架飞机的飞行计划
 	{Type: "Departing", StartTimeMinutes: 1}, {Type: "Departing", StartTimeMinutes: 3},
 	{Type: "Departing", StartTimeMinutes: 6}, {Type: "Departing", StartTimeMinutes: 11},
 	{Type: "Departing", StartTimeMinutes: 15}, {Type: "Departing", StartTimeMinutes: 16},
@@ -25,67 +24,6 @@ var flightPlans = []FlightPlan{
 	{Type: "Arriving", StartTimeMinutes: 13}, {Type: "Arriving", StartTimeMinutes: 18},
 	{Type: "Arriving", StartTimeMinutes: 22}, {Type: "Arriving", StartTimeMinutes: 24},
 	{Type: "Arriving", StartTimeMinutes: 26}, {Type: "Arriving", StartTimeMinutes: 27},
-
-	//// 新增30架飞机的飞行计划（StartTimeMinutes ≤30，允许重复）
-	//// Departing新增15个（时间复用现有1-28分钟区间）
-	//{Type: "Departing", StartTimeMinutes: 1}, {Type: "Departing", StartTimeMinutes: 3},
-	//{Type: "Departing", StartTimeMinutes: 6}, {Type: "Departing", StartTimeMinutes: 11},
-	//{Type: "Departing", StartTimeMinutes: 15}, {Type: "Departing", StartTimeMinutes: 16},
-	//{Type: "Departing", StartTimeMinutes: 19}, {Type: "Departing", StartTimeMinutes: 23},
-	//{Type: "Departing", StartTimeMinutes: 25}, {Type: "Departing", StartTimeMinutes: 28},
-	//{Type: "Departing", StartTimeMinutes: 5},  // 新增不超过30的新时间
-	//{Type: "Departing", StartTimeMinutes: 8},  // 新增不超过30的新时间
-	//{Type: "Departing", StartTimeMinutes: 12}, // 新增不超过30的新时间
-	//{Type: "Departing", StartTimeMinutes: 20}, // 新增不超过30的新时间
-	//{Type: "Departing", StartTimeMinutes: 29}, // 新增不超过30的新时间（29≤30）
-	//
-	//// Arriving新增15个（时间复用现有2-27分钟区间）
-	//{Type: "Arriving", StartTimeMinutes: 2}, {Type: "Arriving", StartTimeMinutes: 6},
-	//{Type: "Arriving", StartTimeMinutes: 9}, {Type: "Arriving", StartTimeMinutes: 10},
-	//{Type: "Arriving", StartTimeMinutes: 13}, {Type: "Arriving", StartTimeMinutes: 18},
-	//{Type: "Arriving", StartTimeMinutes: 22}, {Type: "Arriving", StartTimeMinutes: 24},
-	//{Type: "Arriving", StartTimeMinutes: 26}, {Type: "Arriving", StartTimeMinutes: 27},
-	//{Type: "Arriving", StartTimeMinutes: 4},  // 新增不超过30的新时间
-	//{Type: "Arriving", StartTimeMinutes: 7},  // 新增不超过30的新时间
-	//{Type: "Arriving", StartTimeMinutes: 14}, // 新增不超过30的新时间
-	//{Type: "Arriving", StartTimeMinutes: 17}, // 新增不超过30的新时间
-	//{Type: "Arriving", StartTimeMinutes: 30}, // 新增不超过30的新时间（30≤30）
-	//
-	//{Type: "Departing", StartTimeMinutes: 1}, {Type: "Departing", StartTimeMinutes: 3},
-	//{Type: "Departing", StartTimeMinutes: 6}, {Type: "Departing", StartTimeMinutes: 11},
-	//{Type: "Departing", StartTimeMinutes: 15}, {Type: "Departing", StartTimeMinutes: 16},
-	//{Type: "Departing", StartTimeMinutes: 19}, {Type: "Departing", StartTimeMinutes: 23},
-	//{Type: "Departing", StartTimeMinutes: 25}, {Type: "Departing", StartTimeMinutes: 28},
-	//{Type: "Arriving", StartTimeMinutes: 2}, {Type: "Arriving", StartTimeMinutes: 6},
-	//{Type: "Arriving", StartTimeMinutes: 9}, {Type: "Arriving", StartTimeMinutes: 10},
-	//{Type: "Arriving", StartTimeMinutes: 13}, {Type: "Arriving", StartTimeMinutes: 18},
-	//{Type: "Arriving", StartTimeMinutes: 22}, {Type: "Arriving", StartTimeMinutes: 24},
-	//{Type: "Arriving", StartTimeMinutes: 26}, {Type: "Arriving", StartTimeMinutes: 27},
-	//
-	//// 新增30架飞机的飞行计划（StartTimeMinutes ≤30，允许重复）
-	//// Departing新增15个（时间复用现有1-28分钟区间）
-	//{Type: "Departing", StartTimeMinutes: 1}, {Type: "Departing", StartTimeMinutes: 3},
-	//{Type: "Departing", StartTimeMinutes: 6}, {Type: "Departing", StartTimeMinutes: 11},
-	//{Type: "Departing", StartTimeMinutes: 15}, {Type: "Departing", StartTimeMinutes: 16},
-	//{Type: "Departing", StartTimeMinutes: 19}, {Type: "Departing", StartTimeMinutes: 23},
-	//{Type: "Departing", StartTimeMinutes: 25}, {Type: "Departing", StartTimeMinutes: 28},
-	//{Type: "Departing", StartTimeMinutes: 5},  // 新增不超过30的新时间
-	//{Type: "Departing", StartTimeMinutes: 8},  // 新增不超过30的新时间
-	//{Type: "Departing", StartTimeMinutes: 12}, // 新增不超过30的新时间
-	//{Type: "Departing", StartTimeMinutes: 20}, // 新增不超过30的新时间
-	//{Type: "Departing", StartTimeMinutes: 29}, // 新增不超过30的新时间（29≤30）
-	//
-	//// Arriving新增15个（时间复用现有2-27分钟区间）
-	//{Type: "Arriving", StartTimeMinutes: 2}, {Type: "Arriving", StartTimeMinutes: 6},
-	//{Type: "Arriving", StartTimeMinutes: 9}, {Type: "Arriving", StartTimeMinutes: 10},
-	//{Type: "Arriving", StartTimeMinutes: 13}, {Type: "Arriving", StartTimeMinutes: 18},
-	//{Type: "Arriving", StartTimeMinutes: 22}, {Type: "Arriving", StartTimeMinutes: 24},
-	//{Type: "Arriving", StartTimeMinutes: 26}, {Type: "Arriving", StartTimeMinutes: 27},
-	//{Type: "Arriving", StartTimeMinutes: 4},  // 新增不超过30的新时间
-	//{Type: "Arriving", StartTimeMinutes: 7},  // 新增不超过30的新时间
-	//{Type: "Arriving", StartTimeMinutes: 14}, // 新增不超过30的新时间
-	//{Type: "Arriving", StartTimeMinutes: 17}, // 新增不超过30的新时间
-	//{Type: "Arriving", StartTimeMinutes: 30}, // 新增不超过30的新时间（30≤30）
 }
 
 func RunSimulationSession(wg *sync.WaitGroup, comms *CommunicationSystem, aircraftList []*Aircraft) {
