@@ -1,17 +1,9 @@
 package simulation
 
 import (
+	"Air-Simulator/config"
 	"encoding/json"
 	"time"
-)
-
-type Priority string
-
-const (
-	HighPriority     Priority = "HIGH"
-	CriticalPriority Priority = "CRITICAL"
-	LowPriority      Priority = "LOW"
-	MediumPriority   Priority = "Medium"
 )
 
 // MessageType 定义了 ACARS 报文的类型，便于识别
@@ -48,7 +40,7 @@ type ACARSBaseMessage struct {
 type ACARSMessageInterface interface {
 	GetBaseMessage() ACARSBaseMessage
 	GetData() interface{}
-	GetPriority() Priority // 可以返回字符串表示的优先级
+	GetPriority() config.Priority // 可以返回字符串表示的优先级
 }
 
 // AircraftFaultData 飞机系统故障数据
@@ -72,28 +64,28 @@ type AcknowledgementData struct {
 	Status            string `json:"status"`            // 确认状态 (例如: "RECEIVED", "FAILED")
 }
 
-// CriticalHighPriorityMessage 封装了紧急/高优先级的 ACARS 报文
-type CriticalHighPriorityMessage struct {
+// CriticalPriorityMessage 封装了紧急/高优先级的 ACARS 报文
+type CriticalPriorityMessage struct {
 	ACARSBaseMessage
 	Data json.RawMessage `json:"data"` // 存储具体的故障或ATC消息数据
 }
 
 // GetBaseMessage 实现 ACARSMessageInterface 接口
-func (m CriticalHighPriorityMessage) GetBaseMessage() ACARSBaseMessage { return m.ACARSBaseMessage }
+func (m CriticalPriorityMessage) GetBaseMessage() ACARSBaseMessage { return m.ACARSBaseMessage }
 
 // GetData 实现 ACARSMessageInterface 接口
-func (m CriticalHighPriorityMessage) GetData() interface{} { return m.Data }
+func (m CriticalPriorityMessage) GetData() interface{} { return m.Data }
 
 // GetPriority 实现 ACARSMessageInterface 接口
-func (m CriticalHighPriorityMessage) GetPriority() Priority { return CriticalPriority }
+func (m CriticalPriorityMessage) GetPriority() config.Priority { return config.CriticalPriority }
 
 // 实例化一个高风险的Message
-func NewCriticalHighPriorityMessage(base ACARSBaseMessage, data interface{}) (CriticalHighPriorityMessage, error) {
+func NewCriticalPriorityMessage(base ACARSBaseMessage, data interface{}) (CriticalPriorityMessage, error) {
 	rawData, err := json.Marshal(data)
 	if err != nil {
-		return CriticalHighPriorityMessage{}, err
+		return CriticalPriorityMessage{}, err
 	}
-	return CriticalHighPriorityMessage{
+	return CriticalPriorityMessage{
 		ACARSBaseMessage: base,
 		Data:             rawData,
 	}, nil
@@ -139,7 +131,7 @@ func (m HighMediumPriorityMessage) GetBaseMessage() ACARSBaseMessage { return m.
 func (m HighMediumPriorityMessage) GetData() interface{} { return m.Data }
 
 // GetPriority 实现 ACARSMessageInterface 接口
-func (m HighMediumPriorityMessage) GetPriority() Priority { return HighPriority }
+func (m HighMediumPriorityMessage) GetPriority() config.Priority { return config.HighPriority }
 
 // Helper function to create HighMediumPriorityMessage
 func NewHighMediumPriorityMessage(base ACARSBaseMessage, data interface{}) (HighMediumPriorityMessage, error) {
@@ -200,7 +192,7 @@ func (m MediumLowPriorityMessage) GetBaseMessage() ACARSBaseMessage { return m.A
 func (m MediumLowPriorityMessage) GetData() interface{} { return m.Data }
 
 // GetPriority 实现 ACARSMessageInterface 接口
-func (m MediumLowPriorityMessage) GetPriority() Priority { return MediumPriority }
+func (m MediumLowPriorityMessage) GetPriority() config.Priority { return config.MediumPriority }
 
 // Helper function to create MediumLowPriorityMessage
 func NewMediumLowPriorityMessage(base ACARSBaseMessage, data interface{}) (MediumLowPriorityMessage, error) {
@@ -239,7 +231,7 @@ func (m LowAuxiliaryPriorityMessage) GetBaseMessage() ACARSBaseMessage { return 
 func (m LowAuxiliaryPriorityMessage) GetData() interface{} { return m.Data }
 
 // GetPriority 实现 ACARSMessageInterface 接口
-func (m LowAuxiliaryPriorityMessage) GetPriority() Priority { return LowPriority }
+func (m LowAuxiliaryPriorityMessage) GetPriority() config.Priority { return config.LowPriority }
 
 // LowAuxiliaryPriorityMessage实例化函数
 func NewLowAuxiliaryPriorityMessage(base ACARSBaseMessage, data interface{}) (LowAuxiliaryPriorityMessage, error) {

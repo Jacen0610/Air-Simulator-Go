@@ -2,7 +2,7 @@
 package simulation
 
 import (
-	"fmt"
+	"Air-Simulator/config"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -11,6 +11,7 @@ import (
 
 // Channel 模拟一个共享的物理通信信道。
 type Channel struct {
+	ID            string
 	mutex         sync.Mutex
 	isBusy        bool
 	messageQueue  chan ACARSMessageInterface
@@ -22,44 +23,56 @@ type Channel struct {
 	totalBusyTime            time.Duration
 	lastBusyTimestamp        time.Time
 
-	// --- 新增: 可动态更新的 p-value 策略 ---
-	pValues      PriorityPMap
+	// --- 可动态更新的 p-value 策略 ---
+	pValues      map[config.Priority]float64
 	pValuesMutex sync.RWMutex
+
+	// --- 时隙 (TimeSlot) ---
+	currentTimeSlot time.Duration // 新增: 时隙现在是信道的属性
+	timeSlotMutex   sync.RWMutex
 }
 
 // NewChannel 是 Channel 的构造函数。
-func NewChannel(initialPMap PriorityPMap) *Channel {
+func NewChannel(id string, initialPMap map[config.Priority]float64, initialTimeSlot time.Duration) *Channel {
 	return &Channel{
-		messageQueue: make(chan ACARSMessageInterface, 100),
-		listeners:    make([]chan<- ACARSMessageInterface, 0),
-		pValues:      initialPMap, // 设置初始策略
+		ID:              id,
+		messageQueue:    make(chan ACARSMessageInterface, 100),
+		listeners:       make([]chan<- ACARSMessageInterface, 0),
+		pValues:         initialPMap,
+		currentTimeSlot: initialTimeSlot,
 	}
 }
 
-// --- 新增: 动态更新和获取策略的方法 ---
-
-// UpdatePValues 允许 RL Agent 动态更新信道的 p-value 策略。
-func (c *Channel) UpdatePValues(newPMap PriorityPMap) {
+func (c *Channel) UpdatePValues(newPMap map[config.Priority]float64) {
 	c.pValuesMutex.Lock()
 	defer c.pValuesMutex.Unlock()
 	c.pValues = newPMap
+	log.Printf("🔄 信道 [%s] 的 p-map 已更新。", c.ID)
 }
 
 // GetPForMessage 为给定的优先级获取当前的 p-value。
-func (c *Channel) GetPForMessage(priority Priority) float64 {
+func (c *Channel) GetPForMessage(priority config.Priority) float64 {
 	c.pValuesMutex.RLock()
 	defer c.pValuesMutex.RUnlock()
-	if p, ok := c.pValues[priority]; ok {
+	if p, ok := c.pValues[config.Priority(priority)]; ok {
 		return p
 	}
 	return 0.1 // 返回一个安全的默认值
 }
 
-// GetTotalBusyTime 安全地返回总占用时间
-func (c *Channel) GetTotalBusyTime() time.Duration {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-	return c.totalBusyTime
+// UpdateCurrentTimeSlot 允许动态更新时隙。
+func (c *Channel) UpdateCurrentTimeSlot(newTimeSlot time.Duration) {
+	c.timeSlotMutex.Lock()
+	defer c.timeSlotMutex.Unlock()
+	c.currentTimeSlot = newTimeSlot
+	log.Printf("🔄 信道 [%s] 的时隙已更新为 %v。", c.ID, newTimeSlot)
+}
+
+// GetCurrentTimeSlot 安全地获取当前的时隙值。
+func (c *Channel) GetCurrentTimeSlot() time.Duration {
+	c.timeSlotMutex.RLock()
+	defer c.timeSlotMutex.RUnlock()
+	return c.currentTimeSlot
 }
 
 // IsBusy 检查信道当前是否被占用。
@@ -108,33 +121,26 @@ func (c *Channel) RegisterListener(listener chan<- ACARSMessageInterface) {
 
 func (c *Channel) StartDispatching() {
 	log.Println("📡 信道调度服务已启动...")
-	for msg := range c.messageQueue {
-		c.listenerMutex.Lock()
-		for _, listener := range c.listeners {
-			select {
-			case listener <- msg:
-			default:
-				log.Printf("警告: 监听者队列已满，消息 %s 被丢弃。", msg.GetBaseMessage().MessageID)
+	go func() {
+		for msg := range c.messageQueue {
+			c.listenerMutex.Lock()
+			for _, listener := range c.listeners {
+				select {
+				case listener <- msg:
+				default:
+					log.Printf("警告: 监听者队列已满，消息 %s 被丢弃。", msg.GetBaseMessage().MessageID)
+				}
 			}
+			c.listenerMutex.Unlock()
 		}
-		c.listenerMutex.Unlock()
-	}
+	}()
 }
 
-// GetStats 返回一个包含信道统计信息的可读字符串。
-func (c *Channel) GetStats(totalDuration time.Duration) string {
-	busyTime := c.GetTotalBusyTime()
-	var utilizationRate float64
-	if totalDuration > 0 {
-		utilizationRate = (float64(busyTime) / float64(totalDuration)) * 100
-	}
-
-	stats := fmt.Sprintf("--- 信道统计 ---\n")
-	stats += fmt.Sprintf("  - 总传输报文数: %d\n", c.totalMessagesTransmitted.Load())
-	stats += fmt.Sprintf("  - 总占用时间: %v\n", busyTime.Round(time.Millisecond))
-	stats += fmt.Sprintf("  - 信道占用率: %.2f%%\n", utilizationRate)
-	stats += "------------------\n"
-	return stats
+// GetTotalBusyTime 安全地返回总占用时间
+func (c *Channel) GetTotalBusyTime() time.Duration {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	return c.totalBusyTime
 }
 
 func (c *Channel) ResetStats() {

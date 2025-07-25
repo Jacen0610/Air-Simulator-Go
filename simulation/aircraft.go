@@ -1,10 +1,10 @@
 package simulation
 
 import (
+	"Air-Simulator/config"
 	"encoding/json"
-	"fmt"
 	"log"
-	"math/rand"
+	"math/rand/v2"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -69,9 +69,9 @@ func NewAircraft(icaoAddr, reg, aircraftType, manufacturer, serialNum, airlineCo
 	}
 }
 
-func (a *Aircraft) StartListening(commsChannel *Channel) {
-	commsChannel.RegisterListener(a.inboundQueue)
-	log.Printf("✈️  [飞机 %s] 的通信系统已启动，开始监听信道...", a.CurrentFlightID)
+func (a *Aircraft) StartListening(comms *CommunicationSystem) {
+	comms.RegisterListener(a.inboundQueue) // 通过管理器注册
+	log.Printf("✈️  [飞机 %s] 的通信系统已启动，开始监听主/备信道...", a.CurrentFlightID)
 
 	for msg := range a.inboundQueue {
 		// 只关心 ACK 报文
@@ -98,154 +98,74 @@ func (a *Aircraft) StartListening(commsChannel *Channel) {
 	}
 }
 
-type PriorityPMap map[Priority]float64
-
-// SendMessage 实现了一个带 p-坚持 CSMA 和 ACK/重传机制的完整发送流程。
-func (a *Aircraft) SendMessage(msg ACARSMessageInterface, commsChannel *Channel, timeSlot time.Duration) {
+func (a *Aircraft) SendMessage(msg ACARSMessageInterface, comms *CommunicationSystem) {
+	// 1. 函数签名已更新，移除了 timeSlot time.Duration 参数
 	baseMsg := msg.GetBaseMessage()
-	p := commsChannel.GetPForMessage(msg.GetPriority())
-
 	sendStartTime := time.Now()
 
-	for retries := 0; retries < MaxRetries; retries++ {
-		log.Printf("🚀 [飞机 %s] 准备发送报文 (ID: %s), 尝试次数: %d/%d", a.CurrentFlightID, baseMsg.MessageID, retries+1, MaxRetries)
+	for retries := 0; retries < config.MaxRetries; retries++ {
+		log.Printf("🚀 [飞机 %s] 准备发送报文 (ID: %s, Prio: %s), 尝试次数: %d/%d", a.CurrentFlightID, baseMsg.MessageID, msg.GetPriority(), retries+1, config.MaxRetries)
 		if retries > 0 {
-			// 这是一个重传
-			atomic.AddUint64(&a.totalRetries, 1) // <-- 统计点：记录重传
+			atomic.AddUint64(&a.totalRetries, 1)
 		}
-		// 1. 执行 p-坚持 CSMA 算法来获得发送机会
+
+		// --- 核心逻辑: 在每次重试前，都动态选择信道 ---
+		targetChannel := comms.SelectChannelForMessage(msg, a.CurrentFlightID)
+		p := targetChannel.GetPForMessage(msg.GetPriority())
+		// 2. 从选定的目标信道获取其专属的时隙
+		timeSlotForChannel := targetChannel.GetCurrentTimeSlot()
+
+		// 在选定的目标信道上执行 p-坚持 CSMA 算法
+
 		for {
 			atomic.AddUint64(&a.totalRqTunnel, 1)
-			if !commsChannel.IsBusy() {
-				// 信道空闲，根据概率 p 决定是否发送
+			if !targetChannel.IsBusy() {
 				if rand.Float64() < p {
-					// 成功掷骰子，尝试发送
-					if commsChannel.AttemptTransmit(msg, a.CurrentFlightID, TransmissionTime) {
+					// 只有在概率允许时才真正尝试传输，这构成一次“传输尝试”
+					atomic.AddUint64(&a.totalTxAttempts, 1)
+					if targetChannel.AttemptTransmit(msg, a.CurrentFlightID, config.TransmissionTime) {
+						// 传输成功，记录等待时间
 						waitTime := time.Since(sendStartTime)
 						a.totalWaitTimeNs.Add(waitTime.Nanoseconds())
-						atomic.AddUint64(&a.totalTxAttempts, 1)
-						goto waitForAck // 发送已开始，跳出循环去等待 ACK
+						// 跳出CSMA循环，去等待ACK
+						goto waitForAck
 					} else {
-						// 发送失败，继续循环
-						atomic.AddUint64(&a.totalTxAttempts, 1)
+						// 传输失败，即发生碰撞
 						atomic.AddUint64(&a.totalCollisions, 1)
-						log.Printf("⏳ [飞机 %s] 信道忙，尝试发送失败...", a.CurrentFlightID)
+						// 4. 日志增强: 明确指出在哪个信道上发生了碰撞
+						log.Printf("💥 [飞机 %s] 在信道 [%s] 上发生碰撞！", a.CurrentFlightID, targetChannel.ID)
 					}
-					// 如果 AttemptTransmit 失败（极小概率的竞态），则继续循环
 				} else {
-
-					log.Printf("🤔 [飞机 %s] 信道空闲，但决定延迟 (p=%.2f)。等待下一个时隙...", a.CurrentFlightID, p)
+					// 4. 日志增强: 明确指出在哪个信道上延迟
+					log.Printf("🤔 [飞机 %s] 在信道 [%s] 上空闲，但决定延迟 (p=%.2f)。", a.CurrentFlightID, targetChannel.ID, p)
 				}
 			} else {
 				atomic.AddUint64(&a.totalFailRqTunnel, 1)
-				log.Printf("⏳ [飞机 %s] 信道忙，持续监听...", a.CurrentFlightID)
+				// 4. 日志增强: 明确指出哪个信道忙
+				log.Printf("⏳ [飞机 %s] 发现信道 [%s] 忙，持续监听...", a.CurrentFlightID, targetChannel.ID)
 			}
-			// 等待一个时隙后重试
-			time.Sleep(timeSlot)
+			// 3. 使用从信道获取的专属时隙进行等待
+			time.Sleep(timeSlotForChannel)
 		}
 
 	waitForAck:
-		// 2. 等待 ACK 或超时
+		// 等待 ACK 或超时的逻辑保持不变
 		ackChan := make(chan bool, 1)
 		a.ackWaiters.Store(baseMsg.MessageID, ackChan)
 
 		select {
 		case <-ackChan:
-			// 成功收到 ACK
 			atomic.AddUint64(&a.successfulTx, 1)
-
-			a.ackWaiters.Delete(baseMsg.MessageID) // 清理等待者
+			a.ackWaiters.Delete(baseMsg.MessageID)
 			log.Printf("✅ [飞机 %s] 报文 (ID: %s) 发送流程完成！", a.CurrentFlightID, baseMsg.MessageID)
-			return // 任务完成，退出函数
-
-		case <-time.After(AckTimeout):
-			// ACK 超时
-			a.ackWaiters.Delete(baseMsg.MessageID) // 清理等待者
+			return
+		case <-time.After(config.AckTimeout):
+			a.ackWaiters.Delete(baseMsg.MessageID)
 			log.Printf("⏰ [飞机 %s] 等待报文 (ID: %s) 的 ACK 超时！准备重发...", a.CurrentFlightID, baseMsg.MessageID)
-
 		}
 	}
 
 	log.Printf("❌ [飞机 %s] 报文 (ID: %s) 发送失败，已达到最大重试次数。", a.CurrentFlightID, baseMsg.MessageID)
-}
-
-// UpdatePosition 更新航空器的位置信息
-func (a *Aircraft) UpdatePosition(lat, lon, alt, speed, heading float64) {
-	a.CurrentPosition = &PositionReportData{
-		Latitude:  lat,
-		Longitude: lon,
-		Altitude:  alt,
-		Speed:     speed,
-		Heading:   heading,
-		Timestamp: time.Now(),
-	}
-	a.LastDataReportTimestamp = time.Now()
-}
-
-// UpdateFuel 更新航空器的燃油信息
-func (a *Aircraft) UpdateFuel(remainingKG, consumptionRateKGPH float64) {
-	a.FuelRemainingKG = remainingKG
-	a.FuelConsumptionRateKGPH = consumptionRateKGPH
-	a.LastDataReportTimestamp = time.Now()
-}
-
-// UpdateEngineStatus 更新特定发动机的状态
-func (a *Aircraft) UpdateEngineStatus(engineID int, n1, egt, fuelFlow, oilPressure float64, flightPhase string) {
-	a.EngineStatus[engineID] = &EngineReportData{
-		EngineID:      engineID,
-		N1RPM:         n1,
-		EGT:           egt,
-		FuelFlow:      fuelFlow,
-		OilPressure:   oilPressure,
-		FlightPhase:   flightPhase,
-		ReportTimeUTC: time.Now().UTC(),
-	}
-	a.LastDataReportTimestamp = time.Now()
-}
-
-// UpdateOOOIReport 更新 OOOI 报告
-func (a *Aircraft) UpdateOOOIReport(out, off, on, in time.Time, origin, dest string) {
-	a.LastOOOIReport = &OOOIReportData{
-		OutTime: out,
-		OffTime: off,
-		OnTime:  on,
-		InTime:  in,
-		Origin:  origin,
-		Dest:    dest,
-	}
-	a.LastDataReportTimestamp = time.Now()
-}
-
-// GetCommunicationStats 计算并返回一个包含通信统计信息的可读字符串。
-func (a *Aircraft) GetCommunicationStats() string {
-	// 使用 atomic.LoadUint64 来安全地读取计数值
-	attempts := atomic.LoadUint64(&a.totalTxAttempts)
-	collisions := atomic.LoadUint64(&a.totalCollisions)
-	successes := atomic.LoadUint64(&a.successfulTx)
-	retries := atomic.LoadUint64(&a.totalRetries)
-	totalWaitNs := a.totalWaitTimeNs.Load()
-
-	var avgWaitTime time.Duration
-	if successes > 0 {
-		avgWaitTime = time.Duration(totalWaitNs / int64(successes+retries))
-	}
-
-	var collisionRate float64
-	if attempts > 0 {
-		collisionRate = (float64(collisions) / float64(attempts)) * 100
-	}
-
-	stats := fmt.Sprintf("--- 通信统计 for 飞机 %s ---\n", a.CurrentFlightID)
-	stats += fmt.Sprintf("  - 成功发送报文数: %d\n", successes)
-	stats += fmt.Sprintf("  - 总传输尝试次数: %d\n", attempts)
-	stats += fmt.Sprintf("  - 碰撞/信道访问失败次数: %d\n", collisions)
-	stats += fmt.Sprintf("  - 总重传次数: %d\n", retries)
-	stats += fmt.Sprintf("  - 碰撞率 (失败/尝试): %.2f%%\n", collisionRate)
-
-	stats += fmt.Sprintf("  - 平均等待时间 (成功发送): %v\n", avgWaitTime.Round(time.Millisecond)) // 新增
-	stats += "--------------------------------------\n"
-
-	return stats
 }
 
 func (a *Aircraft) ResetStats() {

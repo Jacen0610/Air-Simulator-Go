@@ -2,62 +2,61 @@
 package collector
 
 import (
-	"Air-Simulator/simulation" // 导入我们新的 simulation 包
+	// collector 只依赖于 simulation 包中定义的类型和接口，不关心其内部逻辑
+	"Air-Simulator/simulation"
 	"fmt"
 	"log"
-	"os"            // 导入 os 包用于文件系统操作
-	"path/filepath" // 导入 path/filepath 包用于处理文件路径
-	"strconv"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/xuri/excelize/v2"
 )
 
-const (
-	// collectionInterval 定义了数据收集和写入Excel的时间间隔。
-	collectionInterval = 5 * time.Minute
-)
+// collectionInterval 定义了数据收集和写入Excel的时间间隔。
+const collectionInterval = 10 * time.Minute
 
-// DataCollector 结构体封装了数据收集器的所有依赖和状态。
+// DataCollector 是一个独立的、解耦的数据记录器。
+// 它在初始化时接收所有需要监控的对象，并在模拟期间定期记录它们的原始统计数据。
 type DataCollector struct {
-	aircraftList  []*simulation.Aircraft
-	groundControl *simulation.GroundControlCenter
-	commsChannel  *simulation.Channel
-	filename      string
-	wg            *sync.WaitGroup
-	done          <-chan struct{}
+	aircrafts      []*simulation.Aircraft
+	channels       []*simulation.Channel
+	groundStations []*simulation.GroundControlCenter
+	filename       string
+	wg             *sync.WaitGroup
+	done           <-chan struct{}
+	startTime      time.Time
 }
 
 // NewDataCollector 创建一个新的数据收集器实例。
+// 它接收需要监控的对象列表，而不是任何管理器或系统对象，以实现解耦。
 func NewDataCollector(
 	wg *sync.WaitGroup,
 	done <-chan struct{},
-	aircraftList []*simulation.Aircraft,
-	groundControl *simulation.GroundControlCenter,
-	commsChannel *simulation.Channel,
+	aircrafts []*simulation.Aircraft,
+	channels []*simulation.Channel, // 直接接收信道列表
+	groundStations []*simulation.GroundControlCenter,
 ) *DataCollector {
-	// 1. 创建一个带时间戳的基础文件名
-	baseFilename := fmt.Sprintf("simulation_results_%s.xlsx", time.Now().Format("20060102_150405"))
-
-	// 2. 使用 filepath.Join 将 "report" 目录和基础文件名安全地拼接成完整路径
-	//    这样做可以跨平台兼容 (Windows, macOS, Linux)
+	// 创建带有时间戳的唯一文件名
+	baseFilename := fmt.Sprintf("simulation_report_%s.xlsx", time.Now().Format("20060102_150405"))
 	fullPath := filepath.Join("report", baseFilename)
 
 	return &DataCollector{
-		aircraftList:  aircraftList,
-		groundControl: groundControl,
-		commsChannel:  commsChannel,
-		filename:      fullPath, // 使用包含目录的完整路径
-		wg:            wg,
-		done:          done,
+		aircrafts:      aircrafts,
+		channels:       channels,
+		groundStations: groundStations,
+		filename:       fullPath,
+		wg:             wg,
+		done:           done,
+		startTime:      time.Now(),
 	}
 }
 
 // Run 启动数据收集过程。它应该在一个单独的goroutine中运行。
 func (dc *DataCollector) Run() {
 	defer dc.wg.Done()
-	log.Printf("📊 数据收集器已启动，将每隔 %v 记录一次数据...", collectionInterval)
+	log.Printf("📊 独立数据收集器已启动，将每隔 %v 记录一次快照...", collectionInterval)
 
 	f := excelize.NewFile()
 	defer func() {
@@ -66,130 +65,164 @@ func (dc *DataCollector) Run() {
 		}
 	}()
 
-	aircraftSheet, groundSheet, channelSheet := "Aircraft_Stats", "GroundControl_Stats", "Channel_Stats"
+	// 为不同类型的数据创建工作表
+	aircraftSheet, channelSheet, groundSheet := "Aircraft_Stats", "Channel_Stats", "GroundControl_Stats"
 	f.NewSheet(aircraftSheet)
-	f.NewSheet(groundSheet)
 	f.NewSheet(channelSheet)
-	f.DeleteSheet("Sheet1")
+	f.NewSheet(groundSheet)
+	f.DeleteSheet("Sheet1") // 删除默认创建的Sheet1
 
-	// --- 写入表头 (已更新) ---
-	headersAircraft := []string{"时间 (Sim Minutes)", "飞机号", "成功传输", "尝试传输", "碰撞次数", "重传次数", "碰撞率 (%)", "平均等待时间 (ms)", "请求通道数", "失败请求通道数", "请求通道失败率"}
-	_ = f.SetSheetRow(aircraftSheet, "A1", &headersAircraft)
-	aircraftRow := 2
+	// --- 写入所有工作表的表头 ---
+	dc.writeHeaders(f, aircraftSheet, channelSheet, groundSheet)
 
-	headersGround := []string{"时间 (Sim Minutes)", "地面站", "成功传输", "尝试传输", "碰撞次数", "碰撞率 (%)", "平均等待时间 (ms)", "请求通道数", "失败请求通道数", "请求通道失败率"}
-	_ = f.SetSheetRow(groundSheet, "A1", &headersGround)
-	groundRow := 2
-
-	headersChannel := []string{"时间 (Sim Minutes)", "总共传输报文", "信道总占用时间 (ms)"}
-	_ = f.SetSheetRow(channelSheet, "A1", &headersChannel)
-	channelRow := 2
+	// 初始化行计数器
+	aircraftRow, channelRow, groundRow := 2, 2, 2
 
 	ticker := time.NewTicker(collectionInterval)
 	defer ticker.Stop()
 
-	simMinutes := 0
-
 	for {
 		select {
 		case <-ticker.C:
-			simMinutes += int(collectionInterval.Minutes())
-			timestampStr := strconv.Itoa(simMinutes)
-			log.Printf("📊 数据已在模拟时间 %d 分钟时记录...", simMinutes)
+			// --- 定时记录数据快照 ---
+			simMinutes := int(time.Since(dc.startTime).Minutes())
+			log.Printf("📊 正在记录模拟时间 %d 分钟时的数据快照...", simMinutes)
 
-			// --- 收集并写入所有飞机的数据 (已更新) ---
-			for _, ac := range dc.aircraftList {
-				stats := ac.GetRawStats()
-				var collisionRate float64
-				// 计算碰撞率，并处理分母为0的情况
-				if stats.TotalTxAttempts > 0 {
-					collisionRate = (float64(stats.TotalCollisions) / float64(stats.TotalTxAttempts)) * 100
-				}
-
-				var avgWaitTimeMs float64
-				if stats.SuccessfulTx > 0 {
-					// 平均等待时间 = 总等待时间 / 成功发送的报文数
-					avgWaitTimeMs = float64(stats.TotalWaitTime.Milliseconds()) / float64(stats.SuccessfulTx+stats.TotalRetries)
-				}
-
-				var rqTunnelRate float64
-				if stats.TotalRqTunnel > 0 {
-					rqTunnelRate = (float64(stats.TotalFailRqTunnel) / float64(stats.TotalRqTunnel)) * 100
-				}
-
-				rowData := []interface{}{
-					timestampStr,
-					ac.CurrentFlightID,
-					stats.SuccessfulTx,
-					stats.TotalTxAttempts,
-					stats.TotalCollisions,
-					stats.TotalRetries,
-					collisionRate,
-					avgWaitTimeMs,
-					stats.TotalRqTunnel,
-					stats.TotalFailRqTunnel,
-					rqTunnelRate,
-				}
-				_ = f.SetSheetRow(aircraftSheet, fmt.Sprintf("A%d", aircraftRow), &rowData)
-				aircraftRow++
-			}
-
-			// --- 收集并写入地面站数据 (已更新) ---
-			gcStats := dc.groundControl.GetRawStats()
-			var gcCollisionRate float64
-			// 计算碰撞率，并处理分母为0的情况
-			if gcStats.TotalTxAttempts > 0 {
-				gcCollisionRate = (float64(gcStats.TotalCollisions) / float64(gcStats.TotalTxAttempts)) * 100
-			}
-
-			var gcAvgWaitTimeMs float64
-			if gcStats.SuccessfulTx > 0 {
-				// 平均等待时间 = 总等待时间 / 成功发送的报文数
-				gcAvgWaitTimeMs = float64(gcStats.TotalWaitTimeNs.Milliseconds()) / float64(gcStats.SuccessfulTx)
-			}
-
-			var rqTunnelRate float64
-			if gcStats.TotalRqTunnel > 0 {
-				rqTunnelRate = (float64(gcStats.TotalFailRqTunnel) / float64(gcStats.TotalRqTunnel)) * 100
-			}
-
-			gcRowData := []interface{}{
-				timestampStr,
-				dc.groundControl.ID,
-				gcStats.SuccessfulTx,
-				gcStats.TotalTxAttempts,
-				gcStats.TotalCollisions,
-				gcCollisionRate,
-				gcAvgWaitTimeMs,
-				gcStats.TotalRqTunnel,
-				gcStats.TotalFailRqTunnel,
-				rqTunnelRate,
-			}
-			_ = f.SetSheetRow(groundSheet, fmt.Sprintf("A%d", groundRow), &gcRowData)
-			groundRow++
-
-			// 收集并写入信道数据
-			chStats := dc.commsChannel.GetRawStats()
-			chRowData := []interface{}{timestampStr, chStats.TotalMessagesTransmitted, chStats.TotalBusyTime.Milliseconds()}
-			_ = f.SetSheetRow(channelSheet, fmt.Sprintf("A%d", channelRow), &chRowData)
-			channelRow++
+			// 记录所有飞机的数据
+			aircraftRow = dc.recordAircraftStats(f, aircraftSheet, aircraftRow, simMinutes)
+			// 记录所有信道的数据
+			channelRow = dc.recordChannelStats(f, channelSheet, channelRow, simMinutes)
+			// 记录所有地面站的数据
+			groundRow = dc.recordGroundStationStats(f, groundSheet, groundRow, simMinutes)
 
 		case <-dc.done:
-			// 3. 在保存文件之前，确保目标目录存在
-			//    首先从完整文件名中提取目录部分
-			reportDir := filepath.Dir(dc.filename)
-			//    然后使用 os.MkdirAll 创建目录。这个函数是安全的，如果目录已存在，它不会做任何事也不会报错。
-			if err := os.MkdirAll(reportDir, 0755); err != nil {
-				log.Printf("❌ 错误: 无法创建报告目录 '%s': %v", reportDir, err)
-				// 即使创建目录失败，也尝试保存，以防根目录可写
-			}
 
-			if err := f.SaveAs(dc.filename); err != nil {
-				log.Printf("❌ 错误: 无法保存 Excel 文件: %v", err)
-			} else {
-				log.Printf("✅ 模拟数据已成功保存到 %s", dc.filename)
-			}
-			return
+			simMinutes := int(time.Since(dc.startTime).Minutes())
+			aircraftRow = dc.recordAircraftStats(f, aircraftSheet, aircraftRow, simMinutes)
+			// 记录所有信道的数据
+			channelRow = dc.recordChannelStats(f, channelSheet, channelRow, simMinutes)
+			// 记录所有地面站的数据
+			groundRow = dc.recordGroundStationStats(f, groundSheet, groundRow, simMinutes)
+
+			// --- 接收到停止信号，执行最终保存 ---
+			log.Println("✅ 模拟结束，正在整理并保存所有数据到Excel文件...")
+			dc.saveReport(f)
+			return // 结束 goroutine
 		}
+	}
+}
+
+// writeHeaders 负责向Excel文件写入表头。
+func (dc *DataCollector) writeHeaders(f *excelize.File, aircraftSheet, channelSheet, groundSheet string) {
+	headersAircraft := []string{"SimTime (min)", "航班号", "成功传输", "重传", "尝试传输", "碰撞次数", "碰撞率 (%)",
+		"平均等待时间 (ms)", "请求信道", "失败请求信道", "请求信道失败率 (%)"}
+	_ = f.SetSheetRow(aircraftSheet, "A1", &headersAircraft)
+
+	headersChannel := []string{"SimTime (min)", "信道", "是否启用", "成功传输", "信道使用时间 (ms)", "信道使用率 (%)"}
+	_ = f.SetSheetRow(channelSheet, "A1", &headersChannel)
+
+	headersGround := []string{"SimTime (min)", "地面站名", "成功传输", "尝试传输", "碰撞次数", "碰撞率 (%)",
+		"平均等待时间 (ms)", "请求信道", "失败请求信道", "请求信道失败率 (%)"}
+	_ = f.SetSheetRow(groundSheet, "A1", &headersGround)
+}
+
+// recordAircraftStats 记录所有飞机的统计数据。
+func (dc *DataCollector) recordAircraftStats(f *excelize.File, sheet string, startRow int, simMinutes int) int {
+	row := startRow
+	for _, ac := range dc.aircrafts {
+		stats := ac.GetRawStats() // 调用接口获取原始数据
+		var collisionRate, rqFailRate float64
+		if stats.TotalTxAttempts > 0 {
+			collisionRate = (float64(stats.TotalCollisions) / float64(stats.TotalTxAttempts)) * 100
+		}
+		if stats.TotalRqTunnel > 0 {
+			rqFailRate = (float64(stats.TotalFailRqTunnel) / float64(stats.TotalRqTunnel)) * 100
+		}
+		var avgWaitTimeMs float64
+		if (stats.SuccessfulTx + stats.TotalRetries) > 0 {
+			avgWaitTimeMs = float64(stats.TotalWaitTime.Milliseconds()) / float64(stats.SuccessfulTx+stats.TotalRetries)
+		}
+
+		rowData := []interface{}{
+			simMinutes, ac.CurrentFlightID, stats.SuccessfulTx, stats.TotalRetries, stats.TotalTxAttempts, stats.TotalCollisions, collisionRate,
+			avgWaitTimeMs, stats.TotalRqTunnel, stats.TotalFailRqTunnel, rqFailRate,
+		}
+		_ = f.SetSheetRow(sheet, fmt.Sprintf("A%d", row), &rowData)
+		row++
+	}
+	return row
+}
+
+// recordChannelStats 记录所有信道的统计数据。
+func (dc *DataCollector) recordChannelStats(f *excelize.File, sheet string, startRow int, simMinutes int) int {
+	row := startRow
+	totalSimDuration := time.Since(dc.startTime)
+
+	for _, ch := range dc.channels {
+		// 核心要求：即使信道未启用(nil)，也要忠实记录其状态
+		if ch == nil {
+			rowData := []interface{}{simMinutes, "Backup (Disabled)", "Disabled", 0, 0, 0.0}
+			_ = f.SetSheetRow(sheet, fmt.Sprintf("A%d", row), &rowData)
+			row++
+			continue
+		}
+
+		stats := ch.GetRawStats() // 调用接口获取原始数据
+		var utilization float64
+		if totalSimDuration > 0 {
+			utilization = (float64(stats.TotalBusyTime) / float64(totalSimDuration)) * 100
+		}
+
+		rowData := []interface{}{
+			simMinutes, ch.ID, "Enabled", stats.TotalMessagesTransmitted, stats.TotalBusyTime.Milliseconds(), utilization,
+		}
+		_ = f.SetSheetRow(sheet, fmt.Sprintf("A%d", row), &rowData)
+		row++
+	}
+	return row
+}
+
+// recordGroundStationStats 记录所有地面站的统计数据。
+func (dc *DataCollector) recordGroundStationStats(f *excelize.File, sheet string, startRow int, simMinutes int) int {
+	row := startRow
+	for _, gcc := range dc.groundStations {
+		stats := gcc.GetRawStats() // 调用接口获取原始数据
+		var collisionRate float64
+		if stats.TotalTxAttempts > 0 {
+			collisionRate = (float64(stats.TotalCollisions) / float64(stats.TotalTxAttempts)) * 100
+		}
+		var avgWaitTimeMs float64
+		if stats.SuccessfulTx > 0 {
+			avgWaitTimeMs = float64(stats.TotalWaitTimeNs.Milliseconds()) / float64(stats.SuccessfulTx)
+		}
+		var rqFailRate float64
+		if stats.TotalRqTunnel > 0 {
+			rqFailRate = (float64(stats.TotalFailRqTunnel) / float64(stats.TotalRqTunnel)) * 100
+		}
+
+		rowData := []interface{}{
+			simMinutes, gcc.ID, stats.SuccessfulTx, stats.TotalTxAttempts, stats.TotalCollisions, collisionRate,
+			avgWaitTimeMs, stats.TotalRqTunnel, stats.TotalFailRqTunnel, rqFailRate,
+		}
+		_ = f.SetSheetRow(sheet, fmt.Sprintf("A%d", row), &rowData)
+		row++
+	}
+	return row
+}
+
+// saveReport 负责创建目录并保存最终的Excel文件。
+func (dc *DataCollector) saveReport(f *excelize.File) {
+	// 在保存文件之前，确保目标目录存在
+	reportDir := filepath.Dir(dc.filename)
+	if err := os.MkdirAll(reportDir, 0755); err != nil {
+		log.Printf("❌ 错误: 无法创建报告目录 '%s': %v", reportDir, err)
+		return
+	}
+
+	// 保存文件
+	if err := f.SaveAs(dc.filename); err != nil {
+		log.Printf("❌ 错误: 无法保存 Excel 报告文件: %v", err)
+	} else {
+		log.Printf("✅ 模拟数据报告已成功保存到: %s", dc.filename)
 	}
 }

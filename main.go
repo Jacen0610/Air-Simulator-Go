@@ -2,8 +2,9 @@
 package main
 
 import (
-	"Air-Simulator/collector"  // 导入新的 collector 包
-	"Air-Simulator/simulation" // 导入新的 simulation 包
+	"Air-Simulator/collector"
+	"Air-Simulator/config" // 导入新的 config 包
+	"Air-Simulator/simulation"
 	"fmt"
 	"log"
 	"sync"
@@ -14,56 +15,77 @@ func main() {
 	log.Println("=============================================")
 	log.Println("======  Air-Ground Communication Simulation  ======")
 	log.Println("=============================================")
-
-	// --- 1. 创建通信信道 ---
-	initialPMap := simulation.PriorityPMap{
-		simulation.CriticalPriority: 0.9,
-		simulation.HighPriority:     0.7,
-		simulation.MediumPriority:   0.4,
-		simulation.LowPriority:      0.2,
+	if config.EnableBackupChannel {
+		log.Printf("加载配置: 双信道模式, 主信道时隙: %v, 备用信道时隙: %v", config.PrimaryTimeSlot, config.BackupTimeSlot)
+		log.Printf("加载配置: 主信道PMAP -> %v, 备用信道PMAP -> %v", config.PrimaryPMap, config.BackupPMap)
+		log.Printf("加载配置: 切换概率 -> %v", config.SwitchoverProbs)
+	} else {
+		log.Printf("加载配置: 单信道模式, 主信道时隙: %v", config.PrimaryTimeSlot)
+		log.Printf("加载配置: 主信道PMAP -> %v", config.PrimaryPMap)
 	}
-	commsChannel := simulation.NewChannel(initialPMap)
-	go commsChannel.StartDispatching()
-	log.Printf("📡 通信信道已创建并启动，时隙: %v", simulation.TimeSlot)
 
-	// --- 2. 创建地面控制中心 ---
-	groundControl := simulation.NewGroundControlCenter("GND_CTL_SEU")
-	go groundControl.StartListening(commsChannel, simulation.TimeSlot)
+	log.Println("=============================================")
 
-	// --- 3. 创建20架飞机 ---
+	// --- 1. 创建信道和通信系统 (所有参数均从 config 包加载) ---
+	primaryChannel := simulation.NewChannel("Primary", config.PrimaryPMap, config.PrimaryTimeSlot)
+	var backupChannel *simulation.Channel
+	if config.EnableBackupChannel {
+		backupChannel = simulation.NewChannel("Backup", config.BackupPMap, config.BackupTimeSlot)
+	}
+
+	commsSystem := simulation.NewCommunicationSystem(primaryChannel, backupChannel, config.SwitchoverProbs)
+	commsSystem.StartDispatching() // 启动所有信道的调度器
+
+	// --- 2. 创建地面站和飞机 ---
+	groundControl := simulation.NewGroundControlCenter("GND_CTL_MAIN")
+	go groundControl.StartListening(commsSystem)
+
 	aircraftList := make([]*simulation.Aircraft, 20)
 	for i := 0; i < 20; i++ {
 		icao := fmt.Sprintf("A%d", 70000+i)
-		reg := fmt.Sprintf("B-%d", 6000+i)
-		flightID := fmt.Sprintf("CES-%d", 1001+i)
-		aircraft := simulation.NewAircraft(icao, reg, "A320neo", "Airbus", "MSN1234"+fmt.Sprintf("%d", i), "CES")
+		flightID := fmt.Sprintf("CES%d", 1001+i)
+		aircraft := simulation.NewAircraft(icao, fmt.Sprintf("B-%d", 6000+i), "A320neo", "Airbus", "MSN1234"+fmt.Sprintf("%d", i), "CES")
 		aircraft.CurrentFlightID = flightID
 		aircraftList[i] = aircraft
-		go aircraft.StartListening(commsChannel)
+		go aircraft.StartListening(commsSystem)
 	}
 	log.Printf("✈️  已成功创建 %d 架飞机.", len(aircraftList))
 
-	// --- 4. 启动数据收集器 ---
+	// --- 3. 启动独立的数据收集器 ---
+	channelsToMonitor := []*simulation.Channel{primaryChannel, backupChannel}
+	groundStationsToMonitor := []*simulation.GroundControlCenter{groundControl}
+
 	var collectorWg sync.WaitGroup
 	collectorWg.Add(1)
 	doneChan := make(chan struct{})
 
-	dataCollector := collector.NewDataCollector(&collectorWg, doneChan, aircraftList, groundControl, commsChannel)
+	dataCollector := collector.NewDataCollector(
+		&collectorWg,
+		doneChan,
+		aircraftList,
+		channelsToMonitor,
+		groundStationsToMonitor,
+	)
 	go dataCollector.Run()
 
-	// --- 5. 运行飞行计划模拟 ---
+	// --- 4. 运行飞行计划模拟 ---
 	log.Println("🛫 开始执行所有飞行计划...")
 	var simWg sync.WaitGroup
-	simulation.RunSimulationSession(&simWg, commsChannel, aircraftList)
+	simulation.RunSimulationSession(&simWg, commsSystem, aircraftList)
 
 	// 等待所有飞行计划完成
 	simWg.Wait()
 	log.Println("✅ 所有飞行计划已执行完毕.")
-	time.Sleep(5 * time.Minute)
-	// --- 6. 停止收集器并等待文件保存 ---
-	log.Println("... 正在停止数据收集器并保存结果 ...")
-	close(doneChan)    // 发送信号，通知收集器停止并保存
-	collectorWg.Wait() // 等待收集器完成最后的保存工作
 
-	log.Println("Simulation finished.")
+	// --- 5. 结束并保存 ---
+	log.Println("... 等待 1 分钟以确保所有最终的通信完成 ...")
+	time.Sleep(1 * time.Minute)
+
+	log.Println("... 正在停止数据收集器并保存结果 ...")
+	close(doneChan)    // 发送停止信号
+	collectorWg.Wait() // 等待收集器完成文件保存
+
+	log.Println("=============================================")
+	log.Println("===========  SIMULATION FINISHED  ===========")
+	log.Println("=============================================")
 }
