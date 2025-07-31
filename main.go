@@ -2,31 +2,31 @@
 package main
 
 import (
+	"Air-Simulator/api"
 	"Air-Simulator/collector"
 	"Air-Simulator/config" // 导入新的 config 包
+	"Air-Simulator/proto"
 	"Air-Simulator/simulation"
 	"fmt"
 	"log"
-	"sync"
-	"time"
+	"net"
+
+	"google.golang.org/grpc"
 )
 
 func main() {
 	log.Println("=============================================")
 	log.Println("======  Air-Ground Communication Simulation  ======")
+	log.Println("======         (MARL Environment Mode)         ======")
 	log.Println("=============================================")
 	if config.EnableBackupChannel {
 		log.Printf("加载配置: 双信道模式, 主信道时隙: %v, 备用信道时隙: %v", config.PrimaryTimeSlot, config.BackupTimeSlot)
-		log.Printf("加载配置: 主信道PMAP -> %v, 备用信道PMAP -> %v", config.PrimaryPMap, config.BackupPMap)
-		log.Printf("加载配置: 切换概率 -> %v", config.SwitchoverProbs)
 	} else {
 		log.Printf("加载配置: 单信道模式, 主信道时隙: %v", config.PrimaryTimeSlot)
-		log.Printf("加载配置: 主信道PMAP -> %v", config.PrimaryPMap)
 	}
-
 	log.Println("=============================================")
 
-	// --- 1. 创建信道和通信系统 (所有参数均从 config 包加载) ---
+	// --- 1. 创建信道和通信系统 ---
 	primaryChannel := simulation.NewChannel("Primary", config.PrimaryPMap, config.PrimaryTimeSlot)
 	var backupChannel *simulation.Channel
 	if config.EnableBackupChannel {
@@ -51,41 +51,34 @@ func main() {
 	}
 	log.Printf("✈️  已成功创建 %d 架飞机.", len(aircraftList))
 
-	// --- 3. 启动独立的数据收集器 ---
-	channelsToMonitor := []*simulation.Channel{primaryChannel, backupChannel}
+	// --- 3. 创建数据收集器实例 ---
+	channelsToMonitor := []*simulation.Channel{primaryChannel}
+	if config.EnableBackupChannel {
+		channelsToMonitor = append(channelsToMonitor, backupChannel)
+	}
 	groundStationsToMonitor := []*simulation.GroundControlCenter{groundControl}
+	dataCollector := collector.NewDataCollector(aircraftList, channelsToMonitor, groundStationsToMonitor)
+	log.Println("📊 数据收集器已准备就绪。")
 
-	var collectorWg sync.WaitGroup
-	collectorWg.Add(1)
-	doneChan := make(chan struct{})
+	// --- 4. 启动 gRPC 服务器并阻塞主线程，使其永不退出 ---
+	lis, err := net.Listen("tcp", ":50051") // 监听 50051 端口
+	if err != nil {
+		log.Fatalf("❌ 无法监听端口: %v", err)
+	}
+	log.Println("🚀 gRPC 服务器正在监听 :50051, 等待 Python 客户端连接...")
 
-	dataCollector := collector.NewDataCollector(
-		&collectorWg,
-		doneChan,
-		aircraftList,
-		channelsToMonitor,
-		groundStationsToMonitor,
-	)
-	go dataCollector.Run()
+	grpcServer := grpc.NewServer()
 
-	// --- 4. 运行飞行计划模拟 ---
-	log.Println("🛫 开始执行所有飞行计划...")
-	var simWg sync.WaitGroup
-	simulation.RunSimulationSession(&simWg, commsSystem, aircraftList)
+	// 创建 API 服务器实例，并传入所有需要的模拟组件
+	apiServer := api.NewServer(commsSystem, aircraftList, []*simulation.GroundControlCenter{groundControl}, dataCollector)
 
-	// 等待所有飞行计划完成
-	simWg.Wait()
-	log.Println("✅ 所有飞行计划已执行完毕.")
+	// 注册服务
+	proto.RegisterSimulatorServer(grpcServer, apiServer)
 
-	// --- 5. 结束并保存 ---
-	log.Println("... 等待 1 分钟以确保所有最终的通信完成 ...")
-	time.Sleep(1 * time.Minute)
+	// 启动服务。这会阻塞 main goroutine，使程序持续运行。
+	if err := grpcServer.Serve(lis); err != nil {
+		log.Fatalf("❌ gRPC 服务器启动失败: %v", err)
+	}
 
-	log.Println("... 正在停止数据收集器并保存结果 ...")
-	close(doneChan)    // 发送停止信号
-	collectorWg.Wait() // 等待收集器完成文件保存
-
-	log.Println("=============================================")
-	log.Println("===========  SIMULATION FINISHED  ===========")
-	log.Println("=============================================")
+	// 程序现在会一直运行在这里，直到你手动停止它 (e.g., Ctrl+C)
 }

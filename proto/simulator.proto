@@ -1,0 +1,76 @@
+// 使用 proto3 语法
+syntax = "proto3";
+
+// 定义包名，这会映射到 Go 的包名
+package proto;
+
+// Go 的包路径选项
+option go_package = "Air-Simulator/proto";
+
+// 定义智能体可以执行的动作枚举
+enum Action {
+  ACTION_UNSPECIFIED = 0; // 默认值
+  ACTION_WAIT = 1;
+  ACTION_SEND_PRIMARY = 2;
+  ACTION_SEND_BACKUP = 3;
+}
+
+// 定义消息优先级枚举
+enum Priority {
+  PRIORITY_UNSPECIFIED = 0;
+  PRIORITY_LOW = 1;
+  PRIORITY_MEDIUM = 2;
+  PRIORITY_HIGH = 3;
+  PRIORITY_CRITICAL = 4;
+}
+
+// 定义单个智能体的观测数据结构
+// 这将是神经网络的输入
+message AgentObservation {
+  bool has_message = 1;
+  Priority top_message_priority = 2;
+  bool primary_channel_busy = 3;
+  bool backup_channel_busy = 4;
+  int32 pending_acks_count = 5;
+  int32 outbound_queue_length = 6;
+}
+
+// 定义 Step 函数返回的单个智能体的完整结果
+message AgentState {
+  AgentObservation observation = 1;
+  float reward = 2;
+  bool done = 3; // 标志着一个 episode 是否结束
+}
+
+// 定义 Step 函数的请求体
+message StepRequest {
+  // key 是智能体的唯一ID (例如 "A70000" 或 "GND_CTL_MAIN")
+  // value 是该智能体要执行的动作
+  map<string, Action> actions = 1;
+}
+
+// 定义 Step 函数的响应体
+message StepResponse {
+  // key 是智能体的唯一ID
+  // value 是该智能体执行动作后的新状态和奖励
+  map<string, AgentState> states = 1;
+}
+
+// 定义 Reset 函数的请求体 (通常为空)
+message ResetRequest {}
+
+// 定义 Reset 函数的响应体
+message ResetResponse {
+  // key 是智能体的唯一ID
+  // value 是该智能体在环境重置后的初始状态
+  map<string, AgentState> states = 1;
+}
+
+// 定义我们的核心服务：模拟器
+service Simulator {
+  // Step 方法：让所有智能体执行一步动作
+  rpc Step(StepRequest) returns (StepResponse) {}
+
+  // Reset 方法：重置整个模拟环境
+  rpc Reset(ResetRequest) returns (ResetResponse) {}
+}

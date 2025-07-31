@@ -60,8 +60,9 @@ type ATCMessageData struct {
 }
 
 type AcknowledgementData struct {
-	OriginalMessageID string `json:"originalMessageID"` // 确认的是哪条原始报文的ID
-	Status            string `json:"status"`            // 确认状态 (例如: "RECEIVED", "FAILED")
+	OriginMessagePriority config.Priority `json:"originMessagePriority"`
+	OriginalMessageID     string          `json:"originalMessageID"` // 确认的是哪条原始报文的ID
+	Status                string          `json:"status"`            // 确认状态 (例如: "RECEIVED", "FAILED")
 }
 
 // CriticalPriorityMessage 封装了紧急/高优先级的 ACARS 报文
@@ -134,7 +135,7 @@ func (m HighMediumPriorityMessage) GetData() interface{} { return m.Data }
 func (m HighMediumPriorityMessage) GetPriority() config.Priority { return config.HighPriority }
 
 // Helper function to create HighMediumPriorityMessage
-func NewHighMediumPriorityMessage(base ACARSBaseMessage, data interface{}) (HighMediumPriorityMessage, error) {
+func NewHighPriorityMessage(base ACARSBaseMessage, data interface{}) (HighMediumPriorityMessage, error) {
 	rawData, err := json.Marshal(data)
 	if err != nil {
 		return HighMediumPriorityMessage{}, err
@@ -195,7 +196,7 @@ func (m MediumLowPriorityMessage) GetData() interface{} { return m.Data }
 func (m MediumLowPriorityMessage) GetPriority() config.Priority { return config.MediumPriority }
 
 // Helper function to create MediumLowPriorityMessage
-func NewMediumLowPriorityMessage(base ACARSBaseMessage, data interface{}) (MediumLowPriorityMessage, error) {
+func NewMediumPriorityMessage(base ACARSBaseMessage, data interface{}) (MediumLowPriorityMessage, error) {
 	rawData, err := json.Marshal(data)
 	if err != nil {
 		return MediumLowPriorityMessage{}, err

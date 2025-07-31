@@ -14,6 +14,21 @@ const (
 	MediumPriority   Priority = "Medium"
 )
 
+func (p Priority) Value() int {
+	switch p {
+	case CriticalPriority:
+		return 4
+	case HighPriority:
+		return 3
+	case MediumPriority:
+		return 2
+	case LowPriority:
+		return 1
+	default:
+		return 0
+	}
+}
+
 type PriorityPMap map[Priority]float64
 
 // ===================================================================
@@ -68,7 +83,7 @@ const (
 	TransmissionTime = 80 * time.Millisecond
 
 	// AckTimeout 定义了发送方等待一个ACK报文的最大超时时间。
-	AckTimeout = 3 * time.Second // 增加了一些余量
+	AckTimeout = 10 * time.Second // 增加了一些余量
 
 	// MaxRetries 定义了一个报文在因超时或碰撞失败后，允许的最大重传次数。
 	MaxRetries = 16
