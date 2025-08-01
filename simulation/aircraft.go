@@ -201,7 +201,6 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 		a.ackWaiters.Delete(msgID) // 从等待者中移除
 		timedOutMsg := messagesToRequeue[i]
 		log.Printf("⏰ [飞机 %s] 等待报文 (ID: %s) 的 ACK 超时！将重新排队...", a.CurrentFlightID, timedOutMsg.GetBaseMessage().MessageID)
-		reward -= 15.0 // 超时是严重错误，给予重罚
 		atomic.AddUint64(&a.totalRetries, 1)
 		a.EnqueueMessage(timedOutMsg)
 	}
