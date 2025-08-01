@@ -230,13 +230,14 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 			// 如果窗口已满，任何发送动作都是无效的，但等待是合理的
 			if action == ActionSendPrimary || action == ActionSendBackup {
 				reward -= 10.0 // 重罚在窗口满时尝试发送的无效动作
+			} else {
+				reward += 1.0
 			}
 			// 等待是正确行为，不增不减
 		} else {
 			// 如果窗口未满，可以进行发送决策
 			switch action {
 			case ActionWait:
-				// 动态惩罚逻辑保持不变
 				a.outboundMutex.RLock()
 				queueLen := len(a.outboundQueue)
 				a.outboundMutex.RUnlock()
