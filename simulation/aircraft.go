@@ -261,7 +261,7 @@ func (a *Aircraft) attemptSendOnChannel(msg ACARSMessageInterface, channel *Chan
 	atomic.AddUint64(&a.totalRqTunnel, 1)
 	if channel.IsBusy() {
 		atomic.AddUint64(&a.totalFailRqTunnel, 1)
-		return -1.0 // 信道忙，小幅惩罚
+		return -1.5 // 信道忙，小幅惩罚
 	}
 
 	atomic.AddUint64(&a.totalTxAttempts, 1)
