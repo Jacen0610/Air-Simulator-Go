@@ -93,13 +93,10 @@ func (c *Channel) AttemptTransmit(msg ACARSMessageInterface, senderID string, tr
 	c.lastBusyTimestamp = time.Now()
 	c.mutex.Unlock()
 
-	log.Printf("➡️  [%s] 成功获得信道，开始传输报文 (ID: %s)", senderID, msg.GetBaseMessage().MessageID)
-
 	go func() {
 		time.Sleep(transmissionTime)
 		c.messageQueue <- msg
 		c.totalMessagesTransmitted.Add(1)
-		log.Printf("✅ [%s] 报文 (ID: %s) 已成功发送至信道。", senderID, msg.GetBaseMessage().MessageID)
 
 		c.mutex.Lock()
 		c.isBusy = false

@@ -219,7 +219,7 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 			queueLen := len(a.outboundQueue)
 			a.outboundMutex.RUnlock()
 			priorityValue := msgToSend.GetPriority().Value()
-			penalty := 1.0 + (float32(queueLen) * 2.0) + (float32(priorityValue) * 0.1)
+			penalty := 1.0 + (float32(queueLen) * 5.0) + (float32(priorityValue) * 0.1)
 			reward -= penalty
 		case ActionSendPrimary:
 			reward += a.attemptSendOnChannel(msgToSend, comms.PrimaryChannel)
@@ -238,7 +238,7 @@ func (a *Aircraft) attemptSendOnChannel(msg ACARSMessageInterface, channel *Chan
 	atomic.AddUint64(&a.totalRqTunnel, 1)
 	if channel.IsBusy() {
 		atomic.AddUint64(&a.totalFailRqTunnel, 1)
-		return -1.5 // 信道忙，小幅惩罚
+		return -1 // 信道忙，小幅惩罚
 	}
 
 	atomic.AddUint64(&a.totalTxAttempts, 1)
@@ -256,7 +256,7 @@ func (a *Aircraft) attemptSendOnChannel(msg ACARSMessageInterface, channel *Chan
 		a.ackWaiters.Store(msgID, waiter)
 
 		// 给予一个小的正奖励，因为成功抢占了信道
-		return 5.0
+		return 15
 	} else {
 		// 发生碰撞
 		atomic.AddUint64(&a.totalCollisions, 1)

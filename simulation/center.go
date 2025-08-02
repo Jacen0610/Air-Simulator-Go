@@ -64,8 +64,6 @@ func (gcc *GroundControlCenter) processMessage(msg ACARSMessageInterface) {
 	// 模拟处理延迟
 	time.Sleep(config.ProcessingDelay)
 
-	log.Printf("✅ [%s] 报文 %s 处理完毕，准备发送高优先级 ACK...", gcc.ID, baseMsg.MessageID)
-
 	// 创建 ACK 报文
 	ackData := AcknowledgementData{
 		OriginMessagePriority: msg.GetPriority(),
@@ -115,8 +113,6 @@ func (gcc *GroundControlCenter) EnqueueMessage(msg ACARSMessageInterface) {
 		// 优先级值越大，越靠前
 		return prioI > prioJ
 	})
-
-	log.Printf("📥 [地面站 %s] 新 ACK (ID: %s) 已进入发送队列并完成排序。", gcc.ID, msg.GetBaseMessage().MessageID)
 }
 
 // peekHighestPriorityMessage 查看（不移除）最重要的消息。
@@ -168,13 +164,6 @@ func (gcc *GroundControlCenter) GetObservation(comms *CommunicationSystem) Agent
 
 // Step 是地面站 MARL 模式下的核心执行函数。
 func (gcc *GroundControlCenter) Step(action AgentAction, comms *CommunicationSystem) float32 {
-	if action == ActionWait {
-		log.Printf("⏳ [地面站 %s] 选择等待，不发送消息。", gcc.ID)
-	} else if action == ActionSendPrimary {
-		log.Printf("📤 [地面站 %s] 选择发送主通道消息。", gcc.ID)
-	} else {
-		log.Printf("📤 [地面站 %s] 选择发送备用通道消息。", gcc.ID)
-	}
 	// 地面站没有异步奖励，因为不接收ACK
 	reward := float32(0.0)
 
