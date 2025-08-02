@@ -54,9 +54,6 @@ type Aircraft struct {
 
 	ackWaiters sync.Map
 
-	// --- MARL 状态与奖励 ---
-	pendingReward atomic.Int64 // 奖励银行，处理异步收到的ACK奖励
-
 	// --- 通信统计 ---
 	totalTxAttempts   uint64       // 总传输尝试次数
 	totalCollisions   uint64       // 碰撞
@@ -139,7 +136,6 @@ func (a *Aircraft) StartListening(comms *CommunicationSystem) {
 		if _, ok := a.ackWaiters.LoadAndDelete(ackData.OriginalMessageID); ok {
 			// 只要成功删除了一个等待者，就说明我们收到了一个有效的ACK
 			log.Printf("🎉 [飞机 %s] 成功收到对报文 %s 的 ACK! (MARL)", a.CurrentFlightID, ackData.OriginalMessageID)
-			a.pendingReward.Add(20) // 存入成功奖励
 			atomic.AddUint64(&a.successfulTx, 1)
 			// **[核心修复]** 消息在发送时已从outboundQueue移除，此处无需也无法再次移除。
 			// a.removeMessageFromQueue(ackData.OriginalMessageID)
@@ -180,7 +176,7 @@ func (a *Aircraft) GetObservation(comms *CommunicationSystem) AgentObservation {
 
 // Step 函数现在从发件箱取消息进行发送
 func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 {
-	reward := float32(a.pendingReward.Swap(0))
+	reward := float32(0)
 
 	// **[核心改造]** 1. 检查并处理所有在途消息的超时
 	var messagesToRequeue []ACARSMessageInterface
@@ -205,13 +201,6 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 		a.EnqueueMessage(timedOutMsg)
 	}
 
-	// 2. 获取当前等待的ACK数量
-	var pendingAcks int
-	a.ackWaiters.Range(func(_, _ interface{}) bool {
-		pendingAcks++
-		return true
-	})
-
 	// 从发件箱获取当前最紧急的消息
 	msgToSend := a.peekHighestPriorityMessage()
 
@@ -224,33 +213,21 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 			reward += 1.0
 		}
 	} else {
-		// 3. 检查发送窗口是否已满
-		if pendingAcks >= MAX_PENDING_ACKS {
-			// 如果窗口已满，任何发送动作都是无效的，但等待是合理的
-			if action == ActionSendPrimary || action == ActionSendBackup {
-				reward -= 10.0 // 重罚在窗口满时尝试发送的无效动作
+		switch action {
+		case ActionWait:
+			a.outboundMutex.RLock()
+			queueLen := len(a.outboundQueue)
+			a.outboundMutex.RUnlock()
+			priorityValue := msgToSend.GetPriority().Value()
+			penalty := 1.0 + (float32(queueLen) * 2.0) + (float32(priorityValue) * 0.1)
+			reward -= penalty
+		case ActionSendPrimary:
+			reward += a.attemptSendOnChannel(msgToSend, comms.PrimaryChannel)
+		case ActionSendBackup:
+			if comms.BackupChannel != nil {
+				reward += a.attemptSendOnChannel(msgToSend, comms.BackupChannel)
 			} else {
-				reward += 1.0
-			}
-			// 等待是正确行为，不增不减
-		} else {
-			// 如果窗口未满，可以进行发送决策
-			switch action {
-			case ActionWait:
-				a.outboundMutex.RLock()
-				queueLen := len(a.outboundQueue)
-				a.outboundMutex.RUnlock()
-				priorityValue := msgToSend.GetPriority().Value()
-				penalty := 1.0 + (float32(queueLen) * 0.2) + (float32(priorityValue) * 0.1)
-				reward -= penalty
-			case ActionSendPrimary:
-				reward += a.attemptSendOnChannel(msgToSend, comms.PrimaryChannel)
-			case ActionSendBackup:
-				if comms.BackupChannel != nil {
-					reward += a.attemptSendOnChannel(msgToSend, comms.BackupChannel)
-				} else {
-					reward -= 10.0
-				}
+				reward -= 10.0
 			}
 		}
 	}
@@ -279,7 +256,7 @@ func (a *Aircraft) attemptSendOnChannel(msg ACARSMessageInterface, channel *Chan
 		a.ackWaiters.Store(msgID, waiter)
 
 		// 给予一个小的正奖励，因为成功抢占了信道
-		return 3.0
+		return 5.0
 	} else {
 		// 发生碰撞
 		atomic.AddUint64(&a.totalCollisions, 1)
