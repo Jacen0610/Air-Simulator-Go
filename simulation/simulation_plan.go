@@ -21,12 +21,17 @@ var flightPlans = []FlightPlan{
 	// 20架飞机的飞行计划
 	{Type: "Departing", StartTimeMinutes: 1}, {Type: "Departing", StartTimeMinutes: 3},
 	{Type: "Departing", StartTimeMinutes: 6}, {Type: "Departing", StartTimeMinutes: 11},
-	{Type: "Departing", StartTimeMinutes: 15}, {Type: "Departing", StartTimeMinutes: 16},
+	{Type: "Departing", StartTimeMinutes: 15},
+
+	{Type: "Departing", StartTimeMinutes: 16},
 	{Type: "Departing", StartTimeMinutes: 19}, {Type: "Departing", StartTimeMinutes: 23},
 	{Type: "Departing", StartTimeMinutes: 25}, {Type: "Departing", StartTimeMinutes: 28},
+
 	{Type: "Arriving", StartTimeMinutes: 2}, {Type: "Arriving", StartTimeMinutes: 6},
 	{Type: "Arriving", StartTimeMinutes: 9}, {Type: "Arriving", StartTimeMinutes: 10},
-	{Type: "Arriving", StartTimeMinutes: 13}, {Type: "Arriving", StartTimeMinutes: 18},
+	{Type: "Arriving", StartTimeMinutes: 13},
+
+	{Type: "Arriving", StartTimeMinutes: 18},
 	{Type: "Arriving", StartTimeMinutes: 22}, {Type: "Arriving", StartTimeMinutes: 24},
 	{Type: "Arriving", StartTimeMinutes: 26}, {Type: "Arriving", StartTimeMinutes: 27},
 }
