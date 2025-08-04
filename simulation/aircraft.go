@@ -215,12 +215,16 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 	} else {
 		switch action {
 		case ActionWait:
-			a.outboundMutex.RLock()
-			queueLen := len(a.outboundQueue)
-			a.outboundMutex.RUnlock()
-			priorityValue := msgToSend.GetPriority().Value()
-			penalty := 1.0 + (float32(queueLen) * 2.0) + (float32(priorityValue) * 0.1)
-			reward -= penalty
+			if comms.PrimaryChannel.IsBusy() && comms.BackupChannel != nil && comms.BackupChannel.IsBusy() {
+				reward += 1.0
+			} else {
+				a.outboundMutex.RLock()
+				queueLen := len(a.outboundQueue)
+				a.outboundMutex.RUnlock()
+				priorityValue := msgToSend.GetPriority().Value()
+				penalty := 1.0 + (float32(queueLen) * 1.0) + (float32(priorityValue) * 0.1)
+				reward -= penalty
+			}
 		case ActionSendPrimary:
 			reward += a.attemptSendOnChannel(msgToSend, comms.PrimaryChannel)
 		case ActionSendBackup:
@@ -256,11 +260,11 @@ func (a *Aircraft) attemptSendOnChannel(msg ACARSMessageInterface, channel *Chan
 		a.ackWaiters.Store(msgID, waiter)
 
 		// 给予一个小的正奖励，因为成功抢占了信道
-		return 5
+		return 3
 	} else {
 		// 发生碰撞
 		atomic.AddUint64(&a.totalCollisions, 1)
-		return -5.0 // 碰撞，中度惩罚
+		return -10.0 // 碰撞，中度惩罚
 	}
 }
 

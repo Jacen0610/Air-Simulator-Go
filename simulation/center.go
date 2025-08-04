@@ -189,9 +189,6 @@ func (gcc *GroundControlCenter) Step(action AgentAction, comms *CommunicationSys
 	}
 	gcc.outboundMutex.Unlock()
 
-	// 生存成本，鼓励尽快发送
-	reward -= 0.1
-
 	// 从发件箱获取当前最紧急的消息
 	msgToSend := gcc.peekHighestPriorityMessage()
 	if msgToSend == nil {
@@ -224,7 +221,7 @@ func (gcc *GroundControlCenter) Step(action AgentAction, comms *CommunicationSys
 
 		// 惩罚与队列长度和消息重要性挂钩
 		// 地面站作为中心枢纽，其清空队列的紧迫性更高，因此惩罚系数可以设置得更大
-		penalty := 1.0 + (float32(queueLen) * 0.5) + (float32(originalPriorityValue) * 0.2)
+		penalty := 1.0 + (float32(queueLen) * 1) + (float32(originalPriorityValue) * 0.2)
 		reward -= penalty
 
 	case ActionSendPrimary:
