@@ -18,17 +18,31 @@ type FlightPlan struct {
 // flightPlans 变量 (无变化)
 var flightPlans = []FlightPlan{
 	// 20架飞机的飞行计划
-	{Type: "Departing", StartTimeMinutes: 1}, {Type: "Departing", StartTimeMinutes: 3},
-	{Type: "Departing", StartTimeMinutes: 6}, {Type: "Departing", StartTimeMinutes: 11},
-	{Type: "Departing", StartTimeMinutes: 15}, {Type: "Departing", StartTimeMinutes: 16},
-	{Type: "Departing", StartTimeMinutes: 19}, {Type: "Departing", StartTimeMinutes: 23},
-	{Type: "Departing", StartTimeMinutes: 25}, {Type: "Departing", StartTimeMinutes: 28},
-	{Type: "Arriving", StartTimeMinutes: 2}, {Type: "Arriving", StartTimeMinutes: 6},
-	{Type: "Arriving", StartTimeMinutes: 9}, {Type: "Arriving", StartTimeMinutes: 10},
-	{Type: "Arriving", StartTimeMinutes: 13}, {Type: "Arriving", StartTimeMinutes: 18},
-	{Type: "Arriving", StartTimeMinutes: 22}, {Type: "Arriving", StartTimeMinutes: 24},
-	{Type: "Arriving", StartTimeMinutes: 26}, {Type: "Arriving", StartTimeMinutes: 27},
+	{Type: "Departing", StartTimeMinutes: 1},
+	//{Type: "Departing", StartTimeMinutes: 3},
+	{Type: "Departing", StartTimeMinutes: 6},
+	{Type: "Departing", StartTimeMinutes: 11},
+	{Type: "Departing", StartTimeMinutes: 15},
+
+	{Type: "Departing", StartTimeMinutes: 16},
+	//{Type: "Departing", StartTimeMinutes: 19},
+	{Type: "Departing", StartTimeMinutes: 23},
+	//{Type: "Departing", StartTimeMinutes: 25},
+	{Type: "Departing", StartTimeMinutes: 28},
+
+	{Type: "Arriving", StartTimeMinutes: 2},
+	//{Type: "Arriving", StartTimeMinutes: 6},
+	{Type: "Arriving", StartTimeMinutes: 9},
+	{Type: "Arriving", StartTimeMinutes: 10},
+	{Type: "Arriving", StartTimeMinutes: 13},
+
+	{Type: "Arriving", StartTimeMinutes: 18},
+	//{Type: "Arriving", StartTimeMinutes: 22},
+	{Type: "Arriving", StartTimeMinutes: 24},
+	//{Type: "Arriving", StartTimeMinutes: 26},
+	{Type: "Arriving", StartTimeMinutes: 27},
 }
+var AircraftCount = len(flightPlans)
 
 // RunSimulationSession 更新为接收 CommunicationSystem
 func RunSimulationSession(wg *sync.WaitGroup, commsSystem *CommunicationSystem, aircraftList []*Aircraft) {
