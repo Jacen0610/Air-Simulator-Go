@@ -40,8 +40,8 @@ func main() {
 	groundControl := simulation.NewGroundControlCenter("GND_CTL_MAIN")
 	go groundControl.StartListening(commsSystem)
 
-	aircraftList := make([]*simulation.Aircraft, 20)
-	for i := 0; i < 20; i++ {
+	aircraftList := make([]*simulation.Aircraft, simulation.AircraftCount)
+	for i := 0; i < simulation.AircraftCount; i++ {
 		icao := fmt.Sprintf("A%d", 70000+i)
 		flightID := fmt.Sprintf("CES%d", 1001+i)
 		aircraft := simulation.NewAircraft(icao, fmt.Sprintf("B-%d", 6000+i), "A320neo", "Airbus", "MSN1234"+fmt.Sprintf("%d", i), "CES")
