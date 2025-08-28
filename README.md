@@ -44,3 +44,8 @@ go run main.go
 - 指导老师：W.D.MA (mawd@seu.edu.cn)
 - 其他贡献者：
   - S.Q.Xu
+
+---
+## 许可证
+
+本项目采用 [MIT 许可证](LICENSE) 授权。
