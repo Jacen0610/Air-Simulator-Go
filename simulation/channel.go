@@ -9,11 +9,18 @@ import (
 	"time"
 )
 
+const (
+	// jamTime 定义了在发生碰撞后，信道因信号混乱而保持不可用的时间。
+	jamTime = 400 * time.Millisecond
+)
+
 // Channel 模拟一个共享的物理通信信道。
 type Channel struct {
-	ID            string
-	mutex         sync.Mutex
-	isBusy        bool
+	ID             string
+	stateMutex     sync.Mutex
+	isBusy         bool
+	transmissionID atomic.Uint64 // **[修改]** 用于识别和作废传输的唯一ID
+
 	messageQueue  chan ACARSMessageInterface
 	listeners     []chan<- ACARSMessageInterface
 	listenerMutex sync.Mutex
@@ -28,7 +35,7 @@ type Channel struct {
 	pValuesMutex sync.RWMutex
 
 	// --- 时隙 (TimeSlot) ---
-	currentTimeSlot time.Duration // 新增: 时隙现在是信道的属性
+	currentTimeSlot time.Duration
 	timeSlotMutex   sync.RWMutex
 }
 
@@ -77,39 +84,71 @@ func (c *Channel) GetCurrentTimeSlot() time.Duration {
 
 // IsBusy 检查信道当前是否被占用。
 func (c *Channel) IsBusy() bool {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
+	c.stateMutex.Lock()
+	defer c.stateMutex.Unlock()
 	return c.isBusy
 }
 
-// AttemptTransmit 尝试在信道上传输一个报文。
+// **[核心修改]** 改为同步阻塞模型，函数在传输完成或被破坏后才返回，并返回最终结果。
 func (c *Channel) AttemptTransmit(msg ACARSMessageInterface, senderID string, transmissionTime time.Duration) bool {
-	c.mutex.Lock()
+	// 为本次传输尝试生成一个唯一的ID。
+	myID := c.transmissionID.Add(1)
+
+	c.stateMutex.Lock()
+
+	// 如果信道已被占用，则发生碰撞。
 	if c.isBusy {
-		c.mutex.Unlock()
-		return false
+		// 通过再次增加ID，使正在进行的传输失效。
+		c.transmissionID.Add(1)
+		log.Printf("💥 [%s] 在繁忙的信道 %s 上尝试传输，引发碰撞！正在进行的传输被破坏。", senderID, c.ID)
+
+		// 启动一个goroutine来处理“拥塞”时间，之后再释放信道。
+		go c.jamChannel()
+
+		c.stateMutex.Unlock()
+		return false // 本次尝试失败
 	}
+
+	// 信道空闲，我们占用它。
 	c.isBusy = true
 	c.lastBusyTimestamp = time.Now()
-	c.mutex.Unlock()
+	c.stateMutex.Unlock()
 
-	log.Printf("➡️  [%s] 成功获得信道，开始传输报文 (ID: %s)", senderID, msg.GetBaseMessage().MessageID)
+	log.Printf("➡️  [%s] 发现信道 %s 空闲，开始传输 (报文ID: %s, 传输ID: %d)，将阻塞 %v。", senderID, c.ID, msg.GetBaseMessage().MessageID, myID, transmissionTime)
 
-	go func() {
-		time.Sleep(transmissionTime)
+	// **[修改]** 同步阻塞，模拟传输过程。
+	time.Sleep(transmissionTime)
+
+	// 传输结束后，重新获取锁并检查我们的传输ID是否仍然有效。
+	c.stateMutex.Lock()
+	defer c.stateMutex.Unlock()
+
+	// 检查我们的传输ID是否仍然有效。
+	if c.transmissionID.Load() == myID {
+		// 成功：传输未被中断。
 		c.messageQueue <- msg
 		c.totalMessagesTransmitted.Add(1)
-		log.Printf("✅ [%s] 报文 (ID: %s) 已成功发送至信道。", senderID, msg.GetBaseMessage().MessageID)
-
-		c.mutex.Lock()
-		c.isBusy = false
+		c.isBusy = false // 释放信道
 		busyDuration := time.Since(c.lastBusyTimestamp)
 		c.totalBusyTime += busyDuration
-		c.mutex.Unlock()
-		log.Printf("⬅️  [%s] 传输完成，释放信道。", senderID)
-	}()
+		log.Printf("✅ [%s] 在 %s 上的传输 (传输ID: %d) 成功完成。信道已释放。", senderID, c.ID, myID)
+		return true // **[修改]** 返回 true 表示最终成功
+	} else {
+		// 失败：我们的传输被后续的碰撞所破坏。
+		// 碰撞的制造者已经负责处理拥塞和信道释放，我们只需记录失败并返回 false。
+		log.Printf("❌ [%s] 在 %s 上的传输 (传输ID: %d) 被碰撞破坏。当前有效ID: %d。", senderID, c.ID, myID, c.transmissionID.Load())
+		// 注意：我们不在这里释放信道 (c.isBusy = false)，因为碰撞的制造者已经通过 jamChannel 安排了信道的释放。
+		return false // **[修改]** 返回 false 表示最终失败
+	}
+}
 
-	return true
+// **[新增]** jamChannel 用于在碰撞后将信道标记为拥塞，并在一段时间后清除。
+func (c *Channel) jamChannel() {
+	time.Sleep(jamTime)
+	c.stateMutex.Lock()
+	c.isBusy = false
+	log.Printf("💥 信道 %s 的拥塞状态已清除。", c.ID)
+	c.stateMutex.Unlock()
 }
 
 // RegisterListener 和 StartDispatching 保持不变
@@ -138,14 +177,14 @@ func (c *Channel) StartDispatching() {
 
 // GetTotalBusyTime 安全地返回总占用时间
 func (c *Channel) GetTotalBusyTime() time.Duration {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
+	c.stateMutex.Lock()
+	defer c.stateMutex.Unlock()
 	return c.totalBusyTime
 }
 
 func (c *Channel) ResetStats() {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
+	c.stateMutex.Lock()
+	defer c.stateMutex.Unlock()
 	c.totalBusyTime = 0
 
 	c.totalMessagesTransmitted.Store(0)

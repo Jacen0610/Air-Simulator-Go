@@ -31,27 +31,27 @@ const EnableBackupChannel = true
 
 // PrimaryPMap 定义了主信道的 p-坚持 概率。
 var PrimaryPMap = PriorityPMap{
-	CriticalPriority: 0.9,
-	HighPriority:     0.7,
-	MediumPriority:   0.4,
-	LowPriority:      0.2,
+	CriticalPriority: 0.05,
+	HighPriority:     0.05,
+	MediumPriority:   0.05,
+	LowPriority:      0.05,
 }
 
 // BackupPMap 定义了备用信道的 p-坚持 概率。
 // 它被配置为只高效处理高优先级消息。
 var BackupPMap = PriorityPMap{
-	CriticalPriority: 0.95,
-	HighPriority:     0.8,
-	MediumPriority:   0.2,
-	LowPriority:      0.1,
+	CriticalPriority: 0.05,
+	HighPriority:     0.05,
+	MediumPriority:   0.05,
+	LowPriority:      0.05,
 }
 
 // SwitchoverProbs 定义了当主信道忙碌时，不同优先级的消息切换到备用信道的概率。
 var SwitchoverProbs = map[Priority]float64{
-	CriticalPriority: 1.0,  // 紧急报文: 100% 尝试切换
-	HighPriority:     0.8,  // 高优先级报文: 80% 尝试切换
-	MediumPriority:   0.3,  // 中优先级报文: 30% 尝试切换
-	LowPriority:      0.05, // 低优先级报文: 几乎不切换
+	CriticalPriority: 1.0, // 紧急报文: 100% 尝试切换
+	HighPriority:     1.0, // 高优先级报文: 80% 尝试切换
+	MediumPriority:   1.0, // 中优先级报文: 30% 尝试切换
+	LowPriority:      1.0, // 低优先级报文: 几乎不切换
 }
 
 // ===================================================================
@@ -61,11 +61,11 @@ var SwitchoverProbs = map[Priority]float64{
 const (
 
 	// 主、备用信道的时隙长度
-	PrimaryTimeSlot = 320 * time.Millisecond
-	BackupTimeSlot  = 320 * time.Millisecond
+	PrimaryTimeSlot = 4500 * time.Microsecond
+	BackupTimeSlot  = 4500 * time.Microsecond
 
 	// TransmissionTime 定义了发送一个标准ACARS报文所需的物理时间。
-	TransmissionTime = 80 * time.Millisecond
+	TransmissionTime = 400 * time.Millisecond
 
 	// AckTimeout 定义了发送方等待一个ACK报文的最大超时时间。
 	AckTimeout = 3 * time.Second // 增加了一些余量
