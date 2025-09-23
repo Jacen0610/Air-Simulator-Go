@@ -20,9 +20,9 @@ func main() {
 	log.Println("======         (MARL Environment Mode)         ======")
 	log.Println("=============================================")
 	if config.EnableBackupChannel {
-		log.Printf("加载配置: 双信道模式, 主信道时隙: %v, 备用信道时隙: %v", config.PrimaryTimeSlot, config.BackupTimeSlot)
+		log.Printf("加载配置: 双信道模式")
 	} else {
-		log.Printf("加载配置: 单信道模式, 主信道时隙: %v", config.PrimaryTimeSlot)
+		log.Printf("加载配置: 单信道模式")
 	}
 	log.Println("=============================================")
 

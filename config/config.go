@@ -80,10 +80,10 @@ const (
 	BackupTimeSlot  = 320 * time.Millisecond
 
 	// TransmissionTime 定义了发送一个标准ACARS报文所需的物理时间。
-	TransmissionTime = 80 * time.Millisecond
+	TransmissionTime = 400 * time.Millisecond
 
 	// AckTimeout 定义了发送方等待一个ACK报文的最大超时时间。
-	AckTimeout = 10 * time.Second // 增加了一些余量
+	AckTimeout = 3 * time.Second // 增加了一些余量
 
 	// MaxRetries 定义了一个报文在因超时或碰撞失败后，允许的最大重传次数。
 	MaxRetries = 16

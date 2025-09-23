@@ -141,7 +141,7 @@ func (dc *DataCollector) recordAllStats(f *excelize.File, aircraftSheet, channel
 		}
 		var avgWaitTimeMs float64
 		if stats.SuccessfulTx > 0 {
-			avgWaitTimeMs = float64(stats.TotalWaitTimeNs.Milliseconds()) / float64(stats.SuccessfulTx)
+			avgWaitTimeMs = float64(stats.TotalWaitTime.Milliseconds()) / float64(stats.SuccessfulTx)
 		}
 		rowData := []interface{}{
 			gcc.ID, stats.SuccessfulTx, stats.TotalTxAttempts, stats.TotalCollisions, collisionRate,
