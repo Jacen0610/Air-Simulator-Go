@@ -14,6 +14,7 @@ import (
 type GroundControlCenter struct {
 	ID           string
 	inboundQueue chan ACARSMessageInterface // 自己的内部消息队列
+	outbox       chan OutboxItem            // 自己的消息发件箱
 
 	// --- 通信统计 ---
 	totalTxAttempts   uint64       // 总传输尝试次数 (每次尝试获得信道)
@@ -29,6 +30,25 @@ func NewGroundControlCenter(id string) *GroundControlCenter {
 	return &GroundControlCenter{
 		ID:           id,
 		inboundQueue: make(chan ACARSMessageInterface, 50), // 为其分配一个带缓冲的队列
+		outbox:       make(chan OutboxItem, 100),           // 初始化发件箱
+	}
+}
+
+// EnqueueMessage 将消息放入发件箱以供发送
+func (gcc *GroundControlCenter) EnqueueMessage(msg ACARSMessageInterface) {
+	item := OutboxItem{
+		Message:     msg,
+		EnqueueTime: time.Now(),
+	}
+	gcc.outbox <- item
+	log.Printf("📥 [地面站 %s] 新报文 (ID: %s) 已加入发件箱。", gcc.ID, msg.GetBaseMessage().MessageID)
+}
+
+// ProcessOutbox 循环并串行处理发件箱中的消息
+func (gcc *GroundControlCenter) ProcessOutbox(comms *CommunicationSystem) {
+	for item := range gcc.outbox {
+		// 确保一次只发送一封邮件，因此这里是同步调用
+		gcc.SendMessage(item, comms)
 	}
 }
 
@@ -38,6 +58,8 @@ func (gcc *GroundControlCenter) StartListening(commsSystem *CommunicationSystem)
 	// 向通信系统注册自己的接收队列
 	commsSystem.RegisterListener(gcc.inboundQueue)
 	log.Printf("🛰️  地面站 [%s] 已启动，开始监听通信系统...", gcc.ID)
+
+	go gcc.ProcessOutbox(commsSystem) // 启动发件箱处理器
 
 	// 开启一个循环，专门处理自己队列中的消息
 	for msg := range gcc.inboundQueue {
@@ -80,15 +102,16 @@ func (gcc *GroundControlCenter) processMessage(msg ACARSMessageInterface, commsS
 		return
 	}
 
-	// 调用 SendMessage 将 ACK 发送回通信系统
-	go gcc.SendMessage(ackMessage, commsSystem)
+	// 将 ACK 报文放入发件箱，而不是直接发送
+	gcc.EnqueueMessage(ackMessage)
 }
 
 // SendMessage 使用 p-坚持 CSMA 算法在选定的信道上发送报文。
 // 它会持续尝试直到发送成功。
-func (gcc *GroundControlCenter) SendMessage(msg ACARSMessageInterface, commsSystem *CommunicationSystem) {
+func (gcc *GroundControlCenter) SendMessage(item OutboxItem, commsSystem *CommunicationSystem) {
+	msg := item.Message
+	enqueueTime := item.EnqueueTime
 	baseMsg := msg.GetBaseMessage()
-	sendStartTime := time.Now()
 
 	log.Printf("🚀 [%s] 准备发送 ACK (ID: %s, Prio: %s)", gcc.ID, baseMsg.MessageID, msg.GetPriority())
 
@@ -108,8 +131,8 @@ func (gcc *GroundControlCenter) SendMessage(msg ACARSMessageInterface, commsSyst
 
 				// 尝试传输。ACK的传输时间也使用全局常量
 				if targetChannel.AttemptTransmit(msg, gcc.ID, config.TransmissionTime) {
-					// 发送成功！
-					waitTime := time.Since(sendStartTime)
+					// 发送成功！记录等待时间
+					waitTime := time.Since(enqueueTime)
 					gcc.totalWaitTimeNs.Add(waitTime.Nanoseconds())
 					atomic.AddUint64(&gcc.successfulTx, 1)
 					log.Printf("✅ [%s] 在信道 [%s] 上成功发送 ACK (ID: %s)", gcc.ID, targetChannel.ID, baseMsg.MessageID)

@@ -10,6 +10,12 @@ import (
 	"time"
 )
 
+// OutboxItem 持有消息及其入队时间
+type OutboxItem struct {
+	Message     ACARSMessageInterface
+	EnqueueTime time.Time
+}
+
 // Aircraft 结构体定义了一架航空器的所有关键参数
 type Aircraft struct {
 	// --- 识别与注册信息 ---
@@ -41,6 +47,7 @@ type Aircraft struct {
 
 	// --- 通信与状态管理 ---
 	inboundQueue chan ACARSMessageInterface // 自己的消息收件箱
+	outbox       chan OutboxItem            // 自己的消息发件箱
 	ackWaiters   sync.Map
 
 	// --- 通信统计 ---
@@ -65,13 +72,34 @@ func NewAircraft(icaoAddr, reg, aircraftType, manufacturer, serialNum, airlineCo
 		EngineStatus:            make(map[int]*EngineReportData), // 初始化 Map
 		LastDataReportTimestamp: time.Now(),
 		inboundQueue:            make(chan ACARSMessageInterface, 20), // 初始化收件箱
+		outbox:                  make(chan OutboxItem, 100),           // 初始化发件箱
 		ackWaiters:              sync.Map{},                           // 初始时间
+	}
+}
+
+// EnqueueMessage 将消息放入发件箱以供发送
+func (a *Aircraft) EnqueueMessage(msg ACARSMessageInterface) {
+	item := OutboxItem{
+		Message:     msg,
+		EnqueueTime: time.Now(),
+	}
+	a.outbox <- item
+	log.Printf("📥 [飞机 %s] 新报文 (ID: %s) 已加入发件箱。", a.CurrentFlightID, msg.GetBaseMessage().MessageID)
+}
+
+// ProcessOutbox 循环并串行处理发件箱中的消息
+func (a *Aircraft) ProcessOutbox(comms *CommunicationSystem) {
+	for item := range a.outbox {
+		// 确保一次只发送一封邮件，因此这里是同步调用
+		a.SendMessage(item, comms)
 	}
 }
 
 func (a *Aircraft) StartListening(comms *CommunicationSystem) {
 	comms.RegisterListener(a.inboundQueue) // 通过管理器注册
 	log.Printf("✈️  [飞机 %s] 的通信系统已启动，开始监听主/备信道...", a.CurrentFlightID)
+
+	go a.ProcessOutbox(comms) // 在单独的 goroutine 中启动发件箱处理器
 
 	for msg := range a.inboundQueue {
 		// 只关心 ACK 报文
@@ -98,10 +126,11 @@ func (a *Aircraft) StartListening(comms *CommunicationSystem) {
 	}
 }
 
-func (a *Aircraft) SendMessage(msg ACARSMessageInterface, comms *CommunicationSystem) {
-	// 1. 函数签名已更新，移除了 timeSlot time.Duration 参数
+// SendMessage 从发件箱取出一个项目并尝试发送
+func (a *Aircraft) SendMessage(item OutboxItem, comms *CommunicationSystem) {
+	msg := item.Message
+	enqueueTime := item.EnqueueTime
 	baseMsg := msg.GetBaseMessage()
-	sendStartTime := time.Now()
 
 	for retries := 0; retries < config.MaxRetries; retries++ {
 		log.Printf("🚀 [飞机 %s] 准备发送报文 (ID: %s, Prio: %s), 尝试次数: %d/%d", a.CurrentFlightID, baseMsg.MessageID, msg.GetPriority(), retries+1, config.MaxRetries)
@@ -124,8 +153,8 @@ func (a *Aircraft) SendMessage(msg ACARSMessageInterface, comms *CommunicationSy
 					// 只有在概率允许时才真正尝试传输，这构成一次“传输尝试”
 					atomic.AddUint64(&a.totalTxAttempts, 1)
 					if targetChannel.AttemptTransmit(msg, a.CurrentFlightID, config.TransmissionTime) {
-						// 传输成功，记录等待时间
-						waitTime := time.Since(sendStartTime)
+						// 传输成功，记录从入队到成功抢占信道的总等待时间
+						waitTime := time.Since(enqueueTime)
 						a.totalWaitTimeNs.Add(waitTime.Nanoseconds())
 						// 跳出CSMA循环，去等待ACK
 						goto waitForAck
