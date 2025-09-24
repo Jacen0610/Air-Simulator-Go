@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -147,7 +148,7 @@ func (gcc *GroundControlCenter) Step(action AgentAction, comms *CommunicationSys
 	i := 0
 	for i < len(gcc.outboundQueue) {
 		item := gcc.outboundQueue[i]
-		if time.Since(item.message.GetBaseMessage().Timestamp) > config.AckTimeout {
+		if time.Since(item.enqueueTime) > config.AckTimeout {
 			log.Printf("🗑️ [地面站 %s] 丢弃过期ACK (ID: %s)，因其已在队列中停留过久。", gcc.ID, item.message.GetBaseMessage().MessageID)
 			reward -= 20.0
 			gcc.outboundQueue = append(gcc.outboundQueue[:i], gcc.outboundQueue[i+1:]...)
@@ -155,6 +156,9 @@ func (gcc *GroundControlCenter) Step(action AgentAction, comms *CommunicationSys
 			i++
 		}
 	}
+	sort.Slice(gcc.outboundQueue, func(i, j int) bool {
+		return gcc.outboundQueue[i].enqueueTime.Before(gcc.outboundQueue[j].enqueueTime)
+	})
 	gcc.outboundMutex.Unlock()
 
 	itemToSend := gcc.peekHighestPriorityMessage()
@@ -169,21 +173,24 @@ func (gcc *GroundControlCenter) Step(action AgentAction, comms *CommunicationSys
 
 	switch action {
 	case ActionWait:
-		gcc.outboundMutex.RLock()
-		queueLen := len(gcc.outboundQueue)
-		gcc.outboundMutex.RUnlock()
+		if comms.PrimaryChannel.IsBusy() && comms.BackupChannel != nil && comms.BackupChannel.IsBusy() {
+			reward += 0.5
+		} else {
+			gcc.outboundMutex.RLock()
+			queueLen := len(gcc.outboundQueue)
+			gcc.outboundMutex.RUnlock()
 
-		var originalPriorityValue int
-		if rawData, ok := itemToSend.message.GetData().(json.RawMessage); ok {
-			var ackData AcknowledgementData
-			if json.Unmarshal(rawData, &ackData) == nil {
-				originalPriorityValue = ackData.OriginMessagePriority.Value()
+			var originalPriorityValue int
+			if rawData, ok := itemToSend.message.GetData().(json.RawMessage); ok {
+				var ackData AcknowledgementData
+				if json.Unmarshal(rawData, &ackData) == nil {
+					originalPriorityValue = ackData.OriginMessagePriority.Value()
+				}
 			}
+
+			penalty := 1.0 + (float32(queueLen) * 1) + (float32(originalPriorityValue) * 0.2)
+			reward -= penalty
 		}
-
-		penalty := 1.0 + (float32(queueLen) * 1) + (float32(originalPriorityValue) * 0.2)
-		reward -= penalty
-
 	case ActionSendPrimary:
 		reward += gcc.attemptSendOnChannel(itemToSend, comms.PrimaryChannel)
 	case ActionSendBackup:

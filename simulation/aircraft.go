@@ -99,7 +99,7 @@ func (a *Aircraft) EnqueueMessage(msg ACARSMessageInterface) {
 	a.outboundQueue = append(a.outboundQueue, item)
 
 	sort.Slice(a.outboundQueue, func(i, j int) bool {
-		return a.outboundQueue[i].message.GetPriority().Value() > a.outboundQueue[j].message.GetPriority().Value()
+		return a.outboundQueue[i].message.GetBaseMessage().Timestamp.Before(a.outboundQueue[j].message.GetBaseMessage().Timestamp)
 	})
 	log.Printf("📥 [飞机 %s] 新消息 (ID: %s, Prio: %s) 已进入发送队列。", a.CurrentFlightID, msg.GetBaseMessage().MessageID, msg.GetPriority())
 }
@@ -209,8 +209,9 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 			}
 			a.outboundQueue = append(a.outboundQueue, item)
 		}
+		// **[核心修改]** 超时重传的报文同样按时间戳排序，确保 FIFO
 		sort.Slice(a.outboundQueue, func(i, j int) bool {
-			return a.outboundQueue[i].message.GetPriority().Value() > a.outboundQueue[j].message.GetPriority().Value()
+			return a.outboundQueue[i].enqueueTime.Before(a.outboundQueue[j].enqueueTime)
 		})
 		a.outboundMutex.Unlock()
 	}
@@ -229,7 +230,7 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 	switch action {
 	case ActionWait:
 		if comms.PrimaryChannel.IsBusy() && comms.BackupChannel != nil && comms.BackupChannel.IsBusy() {
-			reward += 5.0
+			reward += 0.5
 		} else {
 			a.outboundMutex.RLock()
 			queueLen := len(a.outboundQueue)
