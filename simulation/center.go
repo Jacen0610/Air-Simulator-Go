@@ -207,7 +207,7 @@ func (gcc *GroundControlCenter) Step(action AgentAction, comms *CommunicationSys
 // **[核心修改]** attemptSendOnChannel 现在使用同步阻塞模型并计算等待时间。
 func (gcc *GroundControlCenter) attemptSendOnChannel(item *outboxItem, channel *Channel) float32 {
 	atomic.AddUint64(&gcc.totalRqTunnel, 1)
-	if channel.IsBusy() {
+	if channel.isBusy {
 		atomic.AddUint64(&gcc.totalFailRqTunnel, 1)
 		return -2.0
 	}
