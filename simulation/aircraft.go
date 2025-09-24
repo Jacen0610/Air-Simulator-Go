@@ -255,7 +255,7 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 // **[核心修改]** attemptSendOnChannel 现在计算排队等待时间。
 func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) float32 {
 	atomic.AddUint64(&a.totalRqTunnel, 1)
-	if channel.isBusy {
+	if channel.IsBusy() {
 		atomic.AddUint64(&a.totalFailRqTunnel, 1)
 		return -2.0
 	}
