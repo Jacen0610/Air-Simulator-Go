@@ -12,8 +12,6 @@ import (
 	"time"
 )
 
-const MAX_PENDING_ACKS = 3
-
 // ackWaiter 结构体，存储等待ACK的报文信息
 type ackWaiter struct {
 	message     ACARSMessageInterface
@@ -263,7 +261,7 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 
 	if channel.IsBusy() {
 		atomic.AddUint64(&a.totalFailRqTunnel, 1)
-		return -3
+		return -2.0
 	}
 
 	atomic.AddUint64(&a.totalTxAttempts, 1)

@@ -206,7 +206,7 @@ func (gcc *GroundControlCenter) attemptSendOnChannel(item *outboxItem, channel *
 
 	if channel.IsBusy() {
 		atomic.AddUint64(&gcc.totalFailRqTunnel, 1)
-		return -5.0
+		return -1.0
 	}
 
 	atomic.AddUint64(&gcc.totalTxAttempts, 1)
@@ -232,7 +232,7 @@ func (gcc *GroundControlCenter) attemptSendOnChannel(item *outboxItem, channel *
 			// 如果实际等待时间小于等于理论极限，给予最大奖励
 			reward = maxReward
 		}
-		return reward
+		return max(reward, float32(1.0))
 	} else {
 		atomic.AddUint64(&gcc.totalCollisions, 1)
 		log.Printf("💥 [地面站 %s] 发送 ACK (ID: %s) 时失败(碰撞)。", gcc.ID, item.message.GetBaseMessage().MessageID)
