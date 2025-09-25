@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.2.0
 // - protoc             v5.29.3
-// source: simulator.proto
+// source: proto/simulator.proto
 
 package proto
 
@@ -141,5 +141,5 @@ var Simulator_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "simulator.proto",
+	Metadata: "proto/simulator.proto",
 }

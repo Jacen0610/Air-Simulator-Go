@@ -4,6 +4,7 @@ import (
 	"Air-Simulator/config"
 	"encoding/json"
 	"log"
+	"math"
 	"math/rand"
 	"sort"
 	"sync"
@@ -20,28 +21,27 @@ type ackWaiter struct {
 	enqueueTime time.Time // **[保留]** 报文原始入队时间，用于超时重传
 }
 
-// outboxItem 用于在发件箱中存储消息及其入队时间
+// outboxItem 用于在发件箱中存储消息及其元数据
 type outboxItem struct {
-	message     ACARSMessageInterface
-	enqueueTime time.Time
+	message          ACARSMessageInterface
+	enqueueTime      time.Time
+	isRetransmission bool // [新增] 标记此条目是否为重传
 }
 
 // Aircraft 结构体定义了一架航空器的所有关键参数
 type Aircraft struct {
-	// --- 识别与注册信息 ---
+	// ... (结构体其他字段保持不变)
 	ICAOAddress  string `json:"icaoAddress"`
 	Registration string `json:"registration"`
 	AircraftType string `json:"aircraftType"`
 	Manufacturer string `json:"manufacturer"`
 	SerialNumber string `json:"serialNumber"`
 
-	// --- 运营与归属信息 ---
 	AirlineICAOCode    string          `json:"airlineICAOCode"`
 	CurrentFlightID    string          `json:"currentFlightID"`
 	CurrentFlightPhase string          `json:"currentFlightPhase"`
 	LastOOOIReport     *OOOIReportData `json:"lastOOOIReport,omitempty"`
 
-	// --- 位置与状态信息 ---
 	CurrentPosition         *PositionReportData       `json:"currentPosition,omitempty"`
 	FuelRemainingKG         float64                   `json:"fuelRemainingKG"`
 	FuelConsumptionRateKGPH float64                   `json:"fuelConsumptionRateKGPH"`
@@ -49,26 +49,23 @@ type Aircraft struct {
 	LastDataReportTimestamp time.Time                 `json:"lastDataReportTimestamp"`
 	SquawkCode              string                    `json:"squawkCode"`
 
-	// --- 通信与系统能力 ---
 	ACARSEnabled          bool   `json:"acarsEnabled"`
 	CPDLCEnabled          bool   `json:"cpdlcEnabled"`
 	SatelliteCommsEnabled bool   `json:"satelliteCommsEnabled"`
 	SoftwareVersion       string `json:"softwareVersion"`
 
-	// --- 通信与状态管理 ---
 	inboundQueue  chan ACARSMessageInterface
 	outboundQueue []outboxItem // 发件箱
 	outboundMutex sync.RWMutex
 	ackWaiters    sync.Map
 
-	// --- 通信统计 ---
-	totalTxAttempts   uint64       // 总传输尝试次数
-	totalCollisions   uint64       // 碰撞/信道访问失败次数
-	successfulTx      uint64       // 成功发送并收到ACK的报文总数
-	totalRetries      uint64       // 总重传次数
-	totalRqTunnel     uint64       // 总尝试请求隧道次数
-	totalFailRqTunnel uint64       // 总失败请求隧道次数
-	totalWaitTimeNs   atomic.Int64 // **[修改]** 总排队等待时间 (纳秒)
+	totalTxAttempts   uint64
+	totalCollisions   uint64
+	successfulTx      uint64
+	totalRetries      uint64
+	totalRqTunnel     uint64
+	totalFailRqTunnel uint64
+	totalWaitTimeNs   atomic.Int64
 }
 
 // NewAircraft 创建一个航空器实例的构造函数
@@ -94,19 +91,20 @@ func (a *Aircraft) EnqueueMessage(msg ACARSMessageInterface) {
 	defer a.outboundMutex.Unlock()
 
 	item := outboxItem{
-		message:     msg,
-		enqueueTime: time.Now(),
+		message:          msg,
+		enqueueTime:      time.Now(),
+		isRetransmission: false, // 新消息不是重传
 	}
 	a.outboundQueue = append(a.outboundQueue, item)
 
 	sort.Slice(a.outboundQueue, func(i, j int) bool {
 		return a.outboundQueue[i].message.GetBaseMessage().Timestamp.Before(a.outboundQueue[j].message.GetBaseMessage().Timestamp)
 	})
-	log.Printf("📥 [飞机 %s] 新消息 (ID: %s, Prio: %s) 已进入发送队列。", a.CurrentFlightID, msg.GetBaseMessage().MessageID, msg.GetPriority())
+	log.Printf("📥 [飞机 %s] 新消息 (ID: %s) 已进入发送队列。当前队列长度: %d", a.CurrentFlightID, msg.GetBaseMessage().MessageID, len(a.outboundQueue))
 }
 
-// peekHighestPriorityMessage 查看（不移除）最重要的消息条目。
-func (a *Aircraft) peekHighestPriorityMessage() *outboxItem {
+// peekMessage 查看（不移除）队列头部的消息条目。
+func (a *Aircraft) peekMessage() *outboxItem {
 	a.outboundMutex.RLock()
 	defer a.outboundMutex.RUnlock()
 	if len(a.outboundQueue) == 0 {
@@ -127,7 +125,7 @@ func (a *Aircraft) removeMessageFromQueue(messageID string) {
 	}
 }
 
-// **[核心修改]** StartListening 现在只负责处理ACK确认，不再计算等待时间。
+// StartListening 只负责处理ACK确认。
 func (a *Aircraft) StartListening(comms *CommunicationSystem) {
 	comms.RegisterListener(a.inboundQueue)
 	log.Printf("✈️  [飞机 %s] 的通信系统已启动，开始监听...", a.CurrentFlightID)
@@ -146,7 +144,6 @@ func (a *Aircraft) StartListening(comms *CommunicationSystem) {
 		}
 
 		if _, ok := a.ackWaiters.LoadAndDelete(ackData.OriginalMessageID); ok {
-			// **[修改]** 移除等待时间计算，只记录成功收到ACK的事件。
 			log.Printf("🎉 [飞机 %s] 成功收到对报文 %s 的 ACK!", a.CurrentFlightID, ackData.OriginalMessageID)
 			atomic.AddUint64(&a.successfulTx, 1)
 		}
@@ -174,20 +171,24 @@ func (a *Aircraft) GetObservation(comms *CommunicationSystem) AgentObservation {
 		obs.BackupChannelBusy = comms.BackupChannel.IsBusy()
 	}
 
-	if topItem := a.peekHighestPriorityMessage(); topItem != nil {
+	if topItem := a.peekMessage(); topItem != nil {
 		obs.HasMessage = true
-		obs.TopMessagePriority = topItem.message.GetPriority()
+		obs.TopMessageWaitTimeSeconds = float32(time.Since(topItem.enqueueTime).Seconds())
+		obs.IsRetransmission = topItem.isRetransmission
 	} else {
 		obs.HasMessage = false
+		obs.TopMessageWaitTimeSeconds = 0
+		obs.IsRetransmission = false
 	}
 
 	return obs
 }
 
-// Step 函数现在从发件箱取消息进行发送
+// Step 函数: 执行一步决策并返回奖励
 func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 {
 	reward := float32(0)
 
+	// 1. 处理 ACK 超时和重传
 	var timedOutWaiters []*ackWaiter
 	a.ackWaiters.Range(func(key, value interface{}) bool {
 		waiter := value.(*ackWaiter)
@@ -204,20 +205,23 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 			log.Printf("⏰ [飞机 %s] 等待报文 (ID: %s) 的 ACK 超时！将重新排队...", a.CurrentFlightID, waiter.message.GetBaseMessage().MessageID)
 			atomic.AddUint64(&a.totalRetries, 1)
 
+			reward -= 25.0
+
 			item := outboxItem{
-				message:     waiter.message,
-				enqueueTime: time.Now(),
+				message:          waiter.message,
+				enqueueTime:      time.Now(),
+				isRetransmission: true,
 			}
 			a.outboundQueue = append(a.outboundQueue, item)
 		}
-		// **[核心修改]** 超时重传的报文同样按时间戳排序，确保 FIFO
 		sort.Slice(a.outboundQueue, func(i, j int) bool {
-			return a.outboundQueue[i].enqueueTime.Before(a.outboundQueue[j].enqueueTime)
+			return a.outboundQueue[i].message.GetBaseMessage().Timestamp.Before(a.outboundQueue[j].message.GetBaseMessage().Timestamp)
 		})
 		a.outboundMutex.Unlock()
 	}
 
-	itemToSend := a.peekHighestPriorityMessage()
+	// 2. 根据动作执行决策
+	itemToSend := a.peekMessage()
 	if itemToSend == nil {
 		if action == ActionSendPrimary || action == ActionSendBackup {
 			reward -= 10.0
@@ -227,17 +231,16 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 		return reward
 	}
 
-	msgToSend := itemToSend.message
 	switch action {
 	case ActionWait:
-		if comms.PrimaryChannel.IsBusy() && comms.BackupChannel != nil && comms.BackupChannel.IsBusy() {
+		if comms.PrimaryChannel.IsBusy() && (comms.BackupChannel == nil || comms.BackupChannel.IsBusy()) {
 			reward += 0.5
 		} else {
-			a.outboundMutex.RLock()
-			queueLen := len(a.outboundQueue)
-			a.outboundMutex.RUnlock()
-			priorityValue := msgToSend.GetPriority().Value()
-			penalty := 1.0 + (float32(queueLen) * 0.5) + (float32(priorityValue) * 0.1)
+			waitTime := float32(time.Since(itemToSend.enqueueTime).Seconds())
+			penalty := 1.0 + waitTime*2.0
+			if itemToSend.isRetransmission {
+				penalty += 15.0
+			}
 			reward -= penalty
 		}
 	case ActionSendPrimary:
@@ -247,48 +250,62 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 		if comms.BackupChannel != nil {
 			reward += a.attemptSendOnChannel(itemToSend, comms.BackupChannel)
 		} else {
-			reward -= 10.0
+			reward -= 15.0
 		}
 	}
 	return reward
 }
 
-// **[核心修改]** attemptSendOnChannel 现在计算排队等待时间。
+// attemptSendOnChannel 尝试在指定信道上发送消息
 func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) float32 {
 	atomic.AddUint64(&a.totalRqTunnel, 1)
 	time.Sleep(time.Duration(10+rand.Intn(41)) * time.Microsecond)
+
 	if channel.IsBusy() {
 		atomic.AddUint64(&a.totalFailRqTunnel, 1)
-		return -2.0
+		return -3
 	}
+
 	atomic.AddUint64(&a.totalTxAttempts, 1)
 	msg := item.message
 
-	// 调用同步阻塞的 AttemptTransmit 函数
 	if channel.AttemptTransmit(msg, a.CurrentFlightID, config.TransmissionTime) {
-		// **[核心修改]** 传输成功启动，立即计算并累加排队等待时间。
 		waitTime := time.Since(item.enqueueTime)
 		a.totalWaitTimeNs.Add(waitTime.Nanoseconds())
 		log.Printf("✈️  [飞机 %s] 成功抢占信道并发送报文 (ID: %s)。排队等待时间: %s", a.CurrentFlightID, msg.GetBaseMessage().MessageID, waitTime)
 
-		// 从待发队列移除，并加入等待ACK的队列
 		a.removeMessageFromQueue(msg.GetBaseMessage().MessageID)
 		waiter := &ackWaiter{
 			message:     msg,
 			sendTime:    time.Now(),
-			enqueueTime: item.enqueueTime, // 传递原始入队时间，以备超时重传
+			enqueueTime: item.enqueueTime,
 		}
 		a.ackWaiters.Store(msg.GetBaseMessage().MessageID, waiter)
 
-		return 3.0 // 成功抢占信道的奖励
+		// [核心修改] 使用指数衰减函数计算奖励
+		const maxReward = 20.0
+		const benchmarkTime = 0.4 // 400ms
+		const decayConstant = 5.0
+
+		waitTimeSeconds := waitTime.Seconds()
+		var reward float32
+		if waitTimeSeconds > benchmarkTime {
+			excessTime := waitTimeSeconds - benchmarkTime
+			reward = float32(maxReward * math.Exp(-decayConstant*excessTime))
+		} else {
+			// 如果实际等待时间小于等于理论极限，给予最大奖励
+			// 这种情况理论上不应发生，但作为代码鲁棒性保证
+			reward = maxReward
+		}
+		return reward
 	} else {
-		// 发生碰撞或信道被占用
 		atomic.AddUint64(&a.totalCollisions, 1)
-		log.Printf("💥 [飞机 %s] 发送报文 (ID: %s) 时失败(碰撞或信道忙)。", a.CurrentFlightID, msg.GetBaseMessage().MessageID)
-		return -10.0 // 碰撞或失败的惩罚
+		log.Printf("💥 [飞机 %s] 发送报文 (ID: %s) 时失败(碰撞)。", a.CurrentFlightID, msg.GetBaseMessage().MessageID)
+		return -50.0
 	}
 }
 
+// Reset 重置飞机状态
 func (a *Aircraft) Reset() {
 	atomic.StoreUint64(&a.totalTxAttempts, 0)
 	atomic.StoreUint64(&a.totalCollisions, 0)
@@ -308,7 +325,7 @@ func (a *Aircraft) Reset() {
 	})
 }
 
-// AircraftRawStats Excel自动统计需要以下两个函数
+// AircraftRawStats 定义了用于数据收集的原始统计数据结构
 type AircraftRawStats struct {
 	SuccessfulTx      uint64
 	TotalTxAttempts   uint64
@@ -320,6 +337,7 @@ type AircraftRawStats struct {
 	UnsentMessages    int
 }
 
+// GetRawStats 返回原始统计数据
 func (a *Aircraft) GetRawStats() AircraftRawStats {
 	a.outboundMutex.RLock()
 	queueSize := len(a.outboundQueue)

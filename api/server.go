@@ -3,7 +3,6 @@ package api
 
 import (
 	"Air-Simulator/collector"
-	"Air-Simulator/config"
 	"Air-Simulator/proto"
 	"Air-Simulator/simulation"
 	"context"
@@ -79,8 +78,8 @@ func (s *Server) Step(ctx context.Context, req *proto.StepRequest) (*proto.StepR
 			wg.Add(1)
 			go func(id string, agentInstance agent, action proto.Action) {
 				defer wg.Done()
-				// 将 proto 的 Action 转换为 simulation 的 AgentAction
-				simAction := simulation.AgentAction(action - 1) // 减1是因为proto枚举从1开始
+				// [核心修改] 将 proto 的 Action (0,1,2) 直接转换为 simulation 的 AgentAction (0,1,2)
+				simAction := simulation.AgentAction(action)
 				reward := agentInstance.Step(simAction, s.commsSystem)
 
 				rewardsMutex.Lock()
@@ -127,7 +126,7 @@ func (s *Server) Reset(ctx context.Context, req *proto.ResetRequest) (*proto.Res
 	}
 
 	// 在启动 goroutine 之前，就将模拟状态设置为 true。
-	// 这就消除了竞态条件，确保任何紧随其后的 Step 请求都能看到正确的 "正在运行" 状态。
+	// 这就消除了竞态条件，确保任何紧随其后的 Step 请求都能看到正确的 \"正在运行\" 状态。
 	s.simulationRunning.Store(true)
 
 	// 2. 在后台启动新的飞行计划模拟（消息生成器）
@@ -159,27 +158,12 @@ func (s *Server) Reset(ctx context.Context, req *proto.ResetRequest) (*proto.Res
 // mapObservationToProto 是一个辅助函数，用于将 Go 的观测结构转换为 Protobuf 结构。
 func mapObservationToProto(obs simulation.AgentObservation) *proto.AgentObservation {
 	return &proto.AgentObservation{
-		HasMessage:          obs.HasMessage,
-		TopMessagePriority:  mapPriorityToProto(obs.TopMessagePriority),
-		PrimaryChannelBusy:  obs.PrimaryChannelBusy,
-		BackupChannelBusy:   obs.BackupChannelBusy,
-		PendingAcksCount:    obs.PendingAcksCount,
-		OutboundQueueLength: obs.OutboundQueueLength, // **[核心修改]**
-	}
-}
-
-// mapPriorityToProto 是一个辅助函数，用于将 Go 的优先级字符串转换为 Protobuf 的枚举。
-func mapPriorityToProto(p config.Priority) proto.Priority {
-	switch p {
-	case config.CriticalPriority:
-		return proto.Priority_PRIORITY_CRITICAL
-	case config.HighPriority:
-		return proto.Priority_PRIORITY_HIGH
-	case config.MediumPriority:
-		return proto.Priority_PRIORITY_MEDIUM
-	case config.LowPriority:
-		return proto.Priority_PRIORITY_LOW
-	default:
-		return proto.Priority_PRIORITY_UNSPECIFIED
+		HasMessage:                obs.HasMessage,
+		PrimaryChannelBusy:        obs.PrimaryChannelBusy,
+		BackupChannelBusy:         obs.BackupChannelBusy,
+		PendingAcksCount:          obs.PendingAcksCount,
+		OutboundQueueLength:       obs.OutboundQueueLength,
+		TopMessageWaitTimeSeconds: obs.TopMessageWaitTimeSeconds,
+		IsRetransmission:          obs.IsRetransmission,
 	}
 }

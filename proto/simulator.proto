@@ -8,11 +8,11 @@ package proto;
 option go_package = "Air-Simulator/proto";
 
 // 定义智能体可以执行的动作枚举
+// [核心修改] 动作空间现在为3，并从0开始编号
 enum Action {
-  ACTION_UNSPECIFIED = 0; // 默认值
-  ACTION_WAIT = 1;
-  ACTION_SEND_PRIMARY = 2;
-  ACTION_SEND_BACKUP = 3;
+  ACTION_WAIT = 0;
+  ACTION_SEND_PRIMARY = 1;
+  ACTION_SEND_BACKUP = 2;
 }
 
 // 定义消息优先级枚举
@@ -28,11 +28,12 @@ enum Priority {
 // 这将是神经网络的输入
 message AgentObservation {
   bool has_message = 1;
-  Priority top_message_priority = 2;
-  bool primary_channel_busy = 3;
-  bool backup_channel_busy = 4;
-  int32 pending_acks_count = 5;
-  int32 outbound_queue_length = 6;
+  bool primary_channel_busy = 2;
+  bool backup_channel_busy = 3;
+  int32 pending_acks_count = 4;
+  int32 outbound_queue_length = 5;
+  float top_message_wait_time_seconds = 6;
+  bool is_retransmission = 7;
 }
 
 // 定义 Step 函数返回的单个智能体的完整结果
