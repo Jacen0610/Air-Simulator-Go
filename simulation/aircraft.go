@@ -156,6 +156,7 @@ func (a *Aircraft) SendMessage(item OutboxItem, comms *CommunicationSystem) {
 						// 传输成功，记录从入队到成功抢占信道的总等待时间
 						waitTime := time.Since(enqueueTime)
 						a.totalWaitTimeNs.Add(waitTime.Nanoseconds())
+						log.Printf("🚀 [飞机 %s] 成功发送报文 (ID: %s, Prio: %s)，耗时: %v", a.CurrentFlightID, baseMsg.MessageID, msg.GetPriority(), waitTime)
 						// 跳出CSMA循环，去等待ACK
 						goto waitForAck
 					} else {

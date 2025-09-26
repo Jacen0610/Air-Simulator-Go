@@ -135,7 +135,7 @@ func (gcc *GroundControlCenter) SendMessage(item OutboxItem, commsSystem *Commun
 					waitTime := time.Since(enqueueTime)
 					gcc.totalWaitTimeNs.Add(waitTime.Nanoseconds())
 					atomic.AddUint64(&gcc.successfulTx, 1)
-					log.Printf("✅ [%s] 在信道 [%s] 上成功发送 ACK (ID: %s)", gcc.ID, targetChannel.ID, baseMsg.MessageID)
+					log.Printf("✅ [%s] 在信道 [%s] 上成功发送 ACK (ID: %s), 耗时: %v", gcc.ID, targetChannel.ID, baseMsg.MessageID, waitTime)
 					return // 成功发送后退出函数
 				} else {
 					// 发生碰撞

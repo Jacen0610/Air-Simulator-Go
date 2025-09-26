@@ -23,7 +23,7 @@ type PriorityPMap map[Priority]float64
 // EnableBackupChannel 控制是否启用备用信道。
 // true: 启用双信道模式，高优先级消息在主信道忙时可使用备用信道。
 // false: 恢复为传统的单信道模式。
-const EnableBackupChannel = false
+const EnableBackupChannel = true
 
 // ===================================================================
 //                       P-Persistence & Channel Switching
