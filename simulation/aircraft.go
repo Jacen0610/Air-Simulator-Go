@@ -213,7 +213,7 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 			a.outboundQueue = append(a.outboundQueue, item)
 		}
 		sort.Slice(a.outboundQueue, func(i, j int) bool {
-			return a.outboundQueue[i].message.GetBaseMessage().Timestamp.Before(a.outboundQueue[j].message.GetBaseMessage().Timestamp)
+			return a.outboundQueue[i].enqueueTime.Before(a.outboundQueue[j].enqueueTime)
 		})
 		a.outboundMutex.Unlock()
 	}
@@ -232,11 +232,26 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 	switch action {
 	case ActionWait:
 		if comms.PrimaryChannel.IsBusy() && (comms.BackupChannel == nil || comms.BackupChannel.IsBusy()) {
-			reward += 0.5
+			// 信道繁忙，等待是合理的，但仍有轻微的时间成本
+			reward -= 0.5
 		} else {
+			// [核心修改] 当信道空闲时，等待的惩罚与队列长度和等待时间挂钩
+			a.outboundMutex.RLock()
+			queueLen := len(a.outboundQueue)
+			a.outboundMutex.RUnlock()
+
 			waitTime := float32(time.Since(itemToSend.enqueueTime).Seconds())
-			penalty := 1.0 + waitTime*2.0
+
+			// 新的惩罚公式: 基础惩罚 + 队列长度惩罚 + 等待时间惩罚
+			// 队列越长，智能体不作为的“机会成本”就越高，惩罚也应越大。
+			// 我们可以为队列中的每条消息设置一个惩罚因子。
+			const queueLengthPenaltyFactor = 1.5
+			const timePenaltyFactor = 2.0
+
+			penalty := 1.0 + (float32(queueLen) * queueLengthPenaltyFactor) + (waitTime * timePenaltyFactor)
+
 			if itemToSend.isRetransmission {
+				// 对重传消息的延迟给予额外惩罚
 				penalty += 15.0
 			}
 			reward -= penalty

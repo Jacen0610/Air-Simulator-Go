@@ -179,7 +179,7 @@ func (gcc *GroundControlCenter) Step(action AgentAction, comms *CommunicationSys
 	switch action {
 	case ActionWait:
 		if comms.PrimaryChannel.IsBusy() && (comms.BackupChannel == nil || comms.BackupChannel.IsBusy()) {
-			reward += 1.0
+			reward -= 0.5
 		} else {
 			waitTime := float32(time.Since(itemToSend.enqueueTime).Seconds())
 			penalty := 2.0 + waitTime*2.5
