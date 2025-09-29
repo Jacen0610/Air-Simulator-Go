@@ -12,103 +12,53 @@ import (
 type FlightPlan struct {
 	Aircraft         *Aircraft
 	StartTimeMinutes int    // 从模拟开始计算的起飞/进入空域时间 (分钟)
-	Type             string // "Departing" (离港) 或 "Arriving" (进港)
+	Type             string // "Departing" (离港), "Arriving" (进港), 或 "Cruising" (巡航)
 }
 
-// flightPlans 变量 (无变化)
+// flightPlans 变量: (无变化)
 var flightPlans = []FlightPlan{
+	// Departing Flights
 	{Type: "Departing", StartTimeMinutes: 1},
 	{Type: "Departing", StartTimeMinutes: 3},
 	{Type: "Departing", StartTimeMinutes: 6},
 	{Type: "Departing", StartTimeMinutes: 11},
 	{Type: "Departing", StartTimeMinutes: 15},
-
 	{Type: "Departing", StartTimeMinutes: 16},
 	{Type: "Departing", StartTimeMinutes: 19},
 	{Type: "Departing", StartTimeMinutes: 23},
 	{Type: "Departing", StartTimeMinutes: 25},
 	{Type: "Departing", StartTimeMinutes: 28},
 
+	// Arriving Flights
 	{Type: "Arriving", StartTimeMinutes: 2},
 	{Type: "Arriving", StartTimeMinutes: 6},
 	{Type: "Arriving", StartTimeMinutes: 9},
 	{Type: "Arriving", StartTimeMinutes: 10},
 	{Type: "Arriving", StartTimeMinutes: 13},
-
 	{Type: "Arriving", StartTimeMinutes: 18},
 	{Type: "Arriving", StartTimeMinutes: 22},
 	{Type: "Arriving", StartTimeMinutes: 24},
 	{Type: "Arriving", StartTimeMinutes: 26},
 	{Type: "Arriving", StartTimeMinutes: 27},
 
-	/*// 20架飞机的飞行计划
-	{Type: "Departing", StartTimeMinutes: 1},
-	{Type: "Departing", StartTimeMinutes: 2},
-	{Type: "Departing", StartTimeMinutes: 3},
-	{Type: "Departing", StartTimeMinutes: 4},
-	{Type: "Departing", StartTimeMinutes: 5},
-	{Type: "Departing", StartTimeMinutes: 6},
-	{Type: "Departing", StartTimeMinutes: 7},
-	{Type: "Departing", StartTimeMinutes: 8},
-	{Type: "Departing", StartTimeMinutes: 9},
-	{Type: "Departing", StartTimeMinutes: 10},
-	{Type: "Departing", StartTimeMinutes: 11},
-	{Type: "Departing", StartTimeMinutes: 12},
-	{Type: "Departing", StartTimeMinutes: 13},
-	{Type: "Departing", StartTimeMinutes: 14},
-	{Type: "Departing", StartTimeMinutes: 15},
-	{Type: "Departing", StartTimeMinutes: 16},
-	{Type: "Departing", StartTimeMinutes: 17},
-	{Type: "Departing", StartTimeMinutes: 18},
-	{Type: "Departing", StartTimeMinutes: 19},
-	{Type: "Departing", StartTimeMinutes: 20},
-	{Type: "Departing", StartTimeMinutes: 21},
-	{Type: "Departing", StartTimeMinutes: 22},
-	{Type: "Departing", StartTimeMinutes: 23},
-	{Type: "Departing", StartTimeMinutes: 24},
-	{Type: "Departing", StartTimeMinutes: 25},
-	{Type: "Departing", StartTimeMinutes: 26},
-	{Type: "Departing", StartTimeMinutes: 27},
-	{Type: "Departing", StartTimeMinutes: 28},
-	{Type: "Departing", StartTimeMinutes: 29},
-	{Type: "Departing", StartTimeMinutes: 30},
-
-	{Type: "Arriving", StartTimeMinutes: 1},
-	{Type: "Arriving", StartTimeMinutes: 2},
-	{Type: "Arriving", StartTimeMinutes: 3},
-	{Type: "Arriving", StartTimeMinutes: 4},
-	{Type: "Arriving", StartTimeMinutes: 5},
-	{Type: "Arriving", StartTimeMinutes: 6},
-	{Type: "Arriving", StartTimeMinutes: 7},
-	{Type: "Arriving", StartTimeMinutes: 8},
-	{Type: "Arriving", StartTimeMinutes: 9},
-	{Type: "Arriving", StartTimeMinutes: 10},
-	{Type: "Arriving", StartTimeMinutes: 11},
-	{Type: "Arriving", StartTimeMinutes: 12},
-	{Type: "Arriving", StartTimeMinutes: 13},
-	{Type: "Arriving", StartTimeMinutes: 14},
-	{Type: "Arriving", StartTimeMinutes: 15},
-	{Type: "Arriving", StartTimeMinutes: 16},
-	{Type: "Arriving", StartTimeMinutes: 17},
-	{Type: "Arriving", StartTimeMinutes: 18},
-	{Type: "Arriving", StartTimeMinutes: 19},
-	{Type: "Arriving", StartTimeMinutes: 20},
-	{Type: "Arriving", StartTimeMinutes: 21},
-	{Type: "Arriving", StartTimeMinutes: 22},
-	{Type: "Arriving", StartTimeMinutes: 23},
-	{Type: "Arriving", StartTimeMinutes: 24},
-	{Type: "Arriving", StartTimeMinutes: 25},
-	{Type: "Arriving", StartTimeMinutes: 26},
-	{Type: "Arriving", StartTimeMinutes: 27},
-	{Type: "Arriving", StartTimeMinutes: 28},
-	{Type: "Arriving", StartTimeMinutes: 29},
-	{Type: "Arriving", StartTimeMinutes: 30},*/
+	// Cruising Flights
+	{Type: "Cruising", StartTimeMinutes: 4},
+	{Type: "Cruising", StartTimeMinutes: 7},
+	{Type: "Cruising", StartTimeMinutes: 12},
+	{Type: "Cruising", StartTimeMinutes: 20},
+	{Type: "Cruising", StartTimeMinutes: 29},
 }
+
+// AircraftCount 会根据 flightPlans 的长度自动更新
 var AircraftCount = len(flightPlans)
 
 // RunSimulationSession 更新为接收 CommunicationSystem
 func RunSimulationSession(wg *sync.WaitGroup, commsSystem *CommunicationSystem, aircraftList []*Aircraft) {
 	// 为飞行计划分配飞机实例
+	if len(flightPlans) > len(aircraftList) {
+		log.Printf("警告: 飞行计划数量 (%d) 大于飞机实例数量 (%d)。部分计划将不会执行。", len(flightPlans), len(aircraftList))
+		return
+	}
 	for i := range flightPlans {
 		flightPlans[i].Aircraft = aircraftList[i]
 	}
@@ -117,12 +67,39 @@ func RunSimulationSession(wg *sync.WaitGroup, commsSystem *CommunicationSystem, 
 	for i := range flightPlans {
 		wg.Add(1)
 		plan := flightPlans[i]
-		// 传递 commsSystem
 		go simulateFlight(plan, wg)
 	}
 }
 
-// simulateFlight 不再需要 commsSystem 作为参数
+// simulateCruisingPhase 封装了发送巡航报告的通用逻辑
+func simulateCruisingPhase(a *Aircraft, duration time.Duration) {
+	log.Printf("✈️  [飞机 %s] 进入巡航阶段，将持续 %v...", a.CurrentFlightID, duration)
+
+	posTicker := time.NewTicker(config.PosReportInterval)
+	defer posTicker.Stop()
+	fuelTicker := time.NewTicker(config.FuelReportInterval)
+	defer fuelTicker.Stop()
+	weatherTicker := time.NewTicker(config.WeatherReportInterval)
+	defer weatherTicker.Stop()
+	flightTimer := time.NewTimer(duration)
+	defer flightTimer.Stop()
+
+cruisingLoop:
+	for {
+		select {
+		case <-posTicker.C:
+			sendPositionReport(a)
+		case <-fuelTicker.C:
+			sendFuelReport(a)
+		case <-weatherTicker.C:
+			sendWeatherReport(a)
+		case <-flightTimer.C:
+			break cruisingLoop
+		}
+	}
+}
+
+// simulateFlight: [修改] 更新了 'Cruising' 计划的逻辑
 func simulateFlight(plan FlightPlan, wg *sync.WaitGroup) {
 	defer wg.Done()
 
@@ -132,7 +109,8 @@ func simulateFlight(plan FlightPlan, wg *sync.WaitGroup) {
 	log.Printf("🛫 [飞机 %s] 飞行计划启动。类型: %s, 计划开始于 %d 分钟", plan.Aircraft.CurrentFlightID, plan.Type, plan.StartTimeMinutes)
 
 	// 2. 根据飞行计划类型执行不同的通信逻辑
-	if plan.Type == "Departing" {
+	switch plan.Type {
+	case "Departing":
 		// 离港飞机流程
 		sendOOOIMessage(plan.Aircraft, "OUT", time.Now()) // 推出
 		time.Sleep(config.TaxiTime)                       // 滑行
@@ -152,61 +130,19 @@ func simulateFlight(plan FlightPlan, wg *sync.WaitGroup) {
 				break initialClimbLoop
 			}
 		}
-		log.Printf("✈️  [飞机 %s] 初始爬升阶段结束，进入巡航。", plan.Aircraft.CurrentFlightID)
+		log.Printf("✈️  [飞机 %s] 初始爬升阶段结束。", plan.Aircraft.CurrentFlightID)
 
-		// --- 模拟30分钟的离港飞行，包含多种报告 ---
-		posTicker := time.NewTicker(config.PosReportInterval)
-		defer posTicker.Stop()
-		fuelTicker := time.NewTicker(config.FuelReportInterval)
-		defer fuelTicker.Stop()
-		weatherTicker := time.NewTicker(config.WeatherReportInterval)
-		defer weatherTicker.Stop()
-		flightTimer := time.NewTimer(config.FlightDuration)
-		defer flightTimer.Stop()
-
-	flightLoopDepart:
-		for {
-			select {
-			case <-posTicker.C:
-				sendPositionReport(plan.Aircraft)
-			case <-fuelTicker.C:
-				sendFuelReport(plan.Aircraft)
-			case <-weatherTicker.C:
-				sendWeatherReport(plan.Aircraft)
-			case <-flightTimer.C:
-				break flightLoopDepart
-			}
-		}
+		// 调用通用的巡航阶段函数
+		simulateCruisingPhase(plan.Aircraft, config.FlightDuration)
 
 		log.Printf("✈️  [飞机 %s] 已飞出空域。飞行计划结束。", plan.Aircraft.CurrentFlightID)
 
-	} else { // Arriving
+	case "Arriving":
 		// 进港飞机流程
 		sendPositionReport(plan.Aircraft) // 进入空域时首先报告位置
 
-		// --- 模拟30分钟的进港飞行，包含多种报告 ---
-		posTicker := time.NewTicker(config.PosReportInterval)
-		defer posTicker.Stop()
-		fuelTicker := time.NewTicker(config.FuelReportInterval)
-		defer fuelTicker.Stop()
-		weatherTicker := time.NewTicker(config.WeatherReportInterval)
-		defer weatherTicker.Stop()
-		flightTimer := time.NewTimer(config.FlightDuration)
-		defer flightTimer.Stop()
-
-	flightLoopArrive:
-		for {
-			select {
-			case <-posTicker.C:
-				sendPositionReport(plan.Aircraft)
-			case <-fuelTicker.C:
-				sendFuelReport(plan.Aircraft)
-			case <-weatherTicker.C:
-				sendWeatherReport(plan.Aircraft)
-			case <-flightTimer.C:
-				break flightLoopArrive
-			}
-		}
+		// 调用通用的巡航阶段函数
+		simulateCruisingPhase(plan.Aircraft, config.FlightDuration)
 
 		onTime := time.Now()
 		sendOOOIMessage(plan.Aircraft, "ON", onTime) // 降落
@@ -230,7 +166,55 @@ func simulateFlight(plan FlightPlan, wg *sync.WaitGroup) {
 		sendOOOIMessage(plan.Aircraft, "IN", onTime) // 到达
 
 		log.Printf("🛬 [飞机 %s] 已成功降落并抵达停机位。飞行计划结束。", plan.Aircraft.CurrentFlightID)
+
+	case "Cruising":
+		// [核心修改] 'Cruising' 类型的飞机在巡航前后各发送一个ATC报文
+		sendATCMessage(plan.Aircraft, "REQUEST CRUISING ALTITUDE FL350")
+
+		simulateCruisingPhase(plan.Aircraft, config.FlightDuration)
+
+		sendATCMessage(plan.Aircraft, "LEAVING SECTOR, CONTACT NEXT CENTER 128.5")
+
+		log.Printf("✈️  [飞机 %s] 已完成巡航任务。飞行计划结束。", plan.Aircraft.CurrentFlightID)
+
+	default:
+		log.Printf("❌ [飞机 %s] 遇到未知的飞行计划类型: %s", plan.Aircraft.CurrentFlightID, plan.Type)
 	}
+}
+
+// --- 各种发送报告的函数 ---
+
+// [新增] sendATCMessage 将 ATC 报文放入飞机的发件箱
+func sendATCMessage(a *Aircraft, instruction string) {
+	log.Printf("📡 [飞机 %s] 准备发送 ATC 报文: %s", a.CurrentFlightID, instruction)
+
+	// 为 ATC 报文定义一个简单的数据结构
+	type ATCMessageData struct {
+		Instruction string
+		Timestamp   time.Time
+	}
+	atcData := ATCMessageData{
+		Instruction: instruction,
+		Timestamp:   time.Now(),
+	}
+
+	// 假设 MsgTypeATC 在 message.go 中已定义
+	baseMsg := ACARSBaseMessage{
+		AircraftICAOAddress: a.ICAOAddress,
+		FlightID:            a.CurrentFlightID,
+		MessageID:           fmt.Sprintf("%s-ATC-%d", a.CurrentFlightID, time.Now().UnixNano()),
+		Type:                "ATC", // 使用字符串 "ATC" 作为类型，假设 message.go 中有对应的 MsgTypeATC
+		Timestamp:           time.Now(),
+	}
+
+	// ATC 报文通常具有最高优先级
+	// 假设 NewCriticalPriorityMessage 构造函数存在
+	msg, err := NewCriticalPriorityMessage(baseMsg, atcData)
+	if err != nil {
+		log.Printf("❌ [飞机 %s] 创建 ATC 报文失败: %v", a.CurrentFlightID, err)
+		return
+	}
+	a.EnqueueMessage(msg)
 }
 
 // sendEngineReport 将报告放入飞机的发件箱
