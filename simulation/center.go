@@ -4,7 +4,6 @@ import (
 	"Air-Simulator/config"
 	"fmt"
 	"log"
-	"math"
 	"math/rand"
 	"sort"
 	"sync"
@@ -226,19 +225,22 @@ func (gcc *GroundControlCenter) attemptSendOnChannel(item *outboxItem, channel *
 		atomic.AddUint64(&gcc.successfulTx, 1)
 		log.Printf("✅ [地面站 %s] 成功抢占信道并发送 ACK (ID: %s)。排队等待时间: %s", gcc.ID, item.message.GetBaseMessage().MessageID, waitTime)
 
-		// [核心修改] 使用指数衰减函数计算奖励
+		// [核心修改] 使用在 400ms 到 2000ms 之间线性衰减的奖励函数
 		const maxReward = 20.0
-		const benchmarkTime = 0.4 // 400ms
-		const decayConstant = 5.0
+		const minReward = 0.0
+		const minWaitTime = 0.4 // 400ms
+		const maxWaitTime = 2.0 // 2000ms
 
 		waitTimeSeconds := waitTime.Seconds()
 		var reward float32
-		if waitTimeSeconds > benchmarkTime {
-			excessTime := waitTimeSeconds - benchmarkTime
-			reward = float32(maxReward * math.Exp(-decayConstant*excessTime))
-		} else {
-			// 如果实际等待时间小于等于理论极限，给予最大奖励
+
+		if waitTimeSeconds <= minWaitTime {
 			reward = maxReward
+		} else if waitTimeSeconds >= maxWaitTime {
+			reward = minReward
+		} else {
+			// 线性衰减
+			reward = maxReward - float32((waitTimeSeconds-minWaitTime)*(maxReward-minReward)/(maxWaitTime-minWaitTime))
 		}
 		return max(reward, float32(1.0))
 	} else {

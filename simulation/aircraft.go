@@ -4,7 +4,6 @@ import (
 	"Air-Simulator/config"
 	"encoding/json"
 	"log"
-	"math"
 	"math/rand"
 	"sort"
 	"sync"
@@ -303,22 +302,24 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 		}
 		a.ackWaiters.Store(msg.GetBaseMessage().MessageID, waiter)
 
-		// [核心修改] 使用指数衰减函数计算奖励
+		// [核心修改] 使用在 400ms 到 2000ms 之间线性衰减的奖励函数
 		const maxReward = 20.0
-		const benchmarkTime = 0.4 // 400ms
-		const decayConstant = 5.0
+		const minReward = 0.0
+		const minWaitTime = 0.4 // 400ms
+		const maxWaitTime = 2.0 // 2000ms
 
 		waitTimeSeconds := waitTime.Seconds()
 		var reward float32
-		if waitTimeSeconds > benchmarkTime {
-			excessTime := waitTimeSeconds - benchmarkTime
-			reward = float32(maxReward * math.Exp(-decayConstant*excessTime))
-		} else {
-			// 如果实际等待时间小于等于理论极限，给予最大奖励
-			// 这种情况理论上不应发生，但作为代码鲁棒性保证
+
+		if waitTimeSeconds <= minWaitTime {
 			reward = maxReward
+		} else if waitTimeSeconds >= maxWaitTime {
+			reward = minReward
+		} else {
+			// 线性衰减
+			reward = maxReward - float32((waitTimeSeconds-minWaitTime)*(maxReward-minReward)/(maxWaitTime-minWaitTime))
 		}
-		return reward
+		return max(reward, float32(1.0))
 	} else {
 		atomic.AddUint64(&a.totalCollisions, 1)
 		log.Printf("💥 [飞机 %s] 发送报文 (ID: %s) 时失败(碰撞)。", a.CurrentFlightID, msg.GetBaseMessage().MessageID)
