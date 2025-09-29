@@ -11,7 +11,7 @@ type MessageType string
 
 const (
 	MsgTypeAircraftFault MessageType = "AIRCRAFT_FAULT" // 飞机系统故障报告
-	MsgTypeATCMessage    MessageType = "ATC_MESSAGE"    // 空中交通管制消息
+	MsgTypeATK           MessageType = "ATK_MESSAGE"    // 空中管制指令
 
 	MsgTypeOOOI     MessageType = "OOOI_REPORT"     // Out, Off, On, In Report
 	MsgTypePosition MessageType = "POSITION_REPORT" // 位置报告

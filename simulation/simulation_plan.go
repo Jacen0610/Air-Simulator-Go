@@ -13,12 +13,12 @@ import (
 type FlightPlan struct {
 	Aircraft         *Aircraft
 	StartTimeMinutes int    // 从模拟开始计算的起飞/进入空域时间 (分钟)
-	Type             string // "Departing" (离港) 或 "Arriving" (进港)
+	Type             string // "Departing" (离港), "Arriving" (进港) 或 "Cruising" (巡航)
 }
 
 // flightPlans 变量 (无变化)
 var flightPlans = []FlightPlan{
-	// 20架飞机的飞行计划
+	// 25架飞机的飞行计划
 	{Type: "Departing", StartTimeMinutes: 1},
 	{Type: "Departing", StartTimeMinutes: 3},
 	{Type: "Departing", StartTimeMinutes: 6},
@@ -42,6 +42,12 @@ var flightPlans = []FlightPlan{
 	{Type: "Arriving", StartTimeMinutes: 24},
 	{Type: "Arriving", StartTimeMinutes: 26},
 	{Type: "Arriving", StartTimeMinutes: 27},
+
+	{Type: "Cruising", StartTimeMinutes: 4},
+	{Type: "Cruising", StartTimeMinutes: 7},
+	{Type: "Cruising", StartTimeMinutes: 12},
+	{Type: "Cruising", StartTimeMinutes: 20},
+	{Type: "Cruising", StartTimeMinutes: 29},
 }
 
 var AircraftCount = len(flightPlans)
@@ -135,7 +141,7 @@ func simulateFlight(plan FlightPlan, wg *sync.WaitGroup) {
 
 		log.Printf("✈️  [飞机 %s] 已飞出空域。飞行计划结束。", plan.Aircraft.CurrentFlightID)
 
-	} else { // Arriving
+	} else if plan.Type == "Arriving" { // Arriving
 		// 进港飞机流程
 		sendPositionReport(plan.Aircraft) // 进入空域时首先报告位置
 
@@ -187,7 +193,55 @@ func simulateFlight(plan FlightPlan, wg *sync.WaitGroup) {
 		sendOOOIMessage(plan.Aircraft, "IN", onTime) // 到达
 		time.Sleep(30 * time.Second)
 		log.Printf("🛬 [飞机 %s] 已成功降落并抵达停机位。飞行计划结束。", plan.Aircraft.CurrentFlightID)
+	} else if plan.Type == "Cruising" {
+		// 巡航飞机流程
+		sendATKMessage(plan.Aircraft, "MAINTAIN FL350") // 进入巡航时发送指令
+
+		// --- 模拟30分钟的巡航飞行，包含多种报告 ---
+		posTicker := time.NewTicker(config.PosReportInterval)
+		defer posTicker.Stop()
+		fuelTicker := time.NewTicker(config.FuelReportInterval)
+		defer fuelTicker.Stop()
+		weatherTicker := time.NewTicker(config.WeatherReportInterval)
+		defer weatherTicker.Stop()
+		flightTimer := time.NewTimer(config.FlightDuration)
+		defer flightTimer.Stop()
+
+	flightLoopCruise:
+		for {
+			select {
+			case <-posTicker.C:
+				sendPositionReport(plan.Aircraft)
+			case <-fuelTicker.C:
+				sendFuelReport(plan.Aircraft)
+			case <-weatherTicker.C:
+				sendWeatherReport(plan.Aircraft)
+			case <-flightTimer.C:
+				time.Sleep(30 * time.Second)
+				break flightLoopCruise
+			}
+		}
+		sendATKMessage(plan.Aircraft, "DESCEND AND MAINTAIN FL240") // 巡航结束时发送指令
+		log.Printf("✈️  [飞机 %s] 巡航结束。飞行计划结束。", plan.Aircraft.CurrentFlightID)
 	}
+}
+
+// sendATKMessage 发送空中管制指令
+func sendATKMessage(a *Aircraft, content string) {
+	log.Printf("📡 [飞机 %s] 准备发送 ATK 指令: %s", a.CurrentFlightID, content)
+	atkData := ATCMessageData{
+		ATCMsgType: "INSTRUCTION",
+		Content:    content,
+	}
+	baseMsg := ACARSBaseMessage{
+		AircraftICAOAddress: a.ICAOAddress,
+		FlightID:            a.CurrentFlightID,
+		MessageID:           fmt.Sprintf("%s-ATK-%d", a.CurrentFlightID, time.Now().UnixNano()),
+		Type:                MsgTypeATK,
+		Timestamp:           time.Now(),
+	}
+	msg, _ := NewCriticalPriorityMessage(baseMsg, atkData)
+	a.EnqueueMessage(msg)
 }
 
 // ... 其余 send... 函数保持不变 ...

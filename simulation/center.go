@@ -27,6 +27,8 @@ type GroundControlCenter struct {
 	totalRqTunnel     uint64
 	totalFailRqTunnel uint64
 	totalWaitTimeNs   atomic.Int64
+	waitTimes         []time.Duration
+	waitTimesMutex    sync.Mutex
 }
 
 // NewGroundControlCenter 是 GroundControlCenter 的构造函数。
@@ -35,6 +37,7 @@ func NewGroundControlCenter(id string) *GroundControlCenter {
 		ID:            id,
 		inboundQueue:  make(chan ACARSMessageInterface, 50),
 		outboundQueue: make([]outboxItem, 0, 20),
+		waitTimes:     make([]time.Duration, 0, 100),
 	}
 }
 
@@ -214,6 +217,11 @@ func (gcc *GroundControlCenter) attemptSendOnChannel(item *outboxItem, channel *
 	if channel.AttemptTransmit(item.message, gcc.ID, config.TransmissionTime) {
 		waitTime := time.Since(item.enqueueTime)
 		gcc.totalWaitTimeNs.Add(waitTime.Nanoseconds())
+
+		gcc.waitTimesMutex.Lock()
+		gcc.waitTimes = append(gcc.waitTimes, waitTime)
+		gcc.waitTimesMutex.Unlock()
+
 		gcc.removeMessageFromQueue(item.message.GetBaseMessage().MessageID)
 		atomic.AddUint64(&gcc.successfulTx, 1)
 		log.Printf("✅ [地面站 %s] 成功抢占信道并发送 ACK (ID: %s)。排队等待时间: %s", gcc.ID, item.message.GetBaseMessage().MessageID, waitTime)
@@ -249,9 +257,22 @@ func (gcc *GroundControlCenter) Reset() {
 	atomic.StoreUint64(&gcc.totalFailRqTunnel, 0)
 	gcc.totalWaitTimeNs.Store(0)
 
+	gcc.waitTimesMutex.Lock()
+	gcc.waitTimes = make([]time.Duration, 0, 100)
+	gcc.waitTimesMutex.Unlock()
+
 	gcc.outboundMutex.Lock()
 	gcc.outboundQueue = make([]outboxItem, 0, 20)
 	gcc.outboundMutex.Unlock()
+}
+
+// GetWaitTimes 返回一个线程安全的等待时间副本
+func (gcc *GroundControlCenter) GetWaitTimes() []time.Duration {
+	gcc.waitTimesMutex.Lock()
+	defer gcc.waitTimesMutex.Unlock()
+	timesCopy := make([]time.Duration, len(gcc.waitTimes))
+	copy(timesCopy, gcc.waitTimes)
+	return timesCopy
 }
 
 // GroundControlRawStats 定义了用于数据收集的原始统计数据结构。

@@ -45,10 +45,11 @@ func (dc *DataCollector) CollectAndSave(episodeNumber int) {
 	}()
 
 	// 为不同类型的数据创建工作表
-	aircraftSheet, channelSheet, groundSheet := "Aircraft_Stats", "Channel_Stats", "GroundControl_Stats"
+	aircraftSheet, channelSheet, groundSheet, waitTimeSheet := "Aircraft_Stats", "Channel_Stats", "GroundControl_Stats", "Wait_Time_Distribution"
 	f.NewSheet(aircraftSheet)
 	f.NewSheet(channelSheet)
 	f.NewSheet(groundSheet)
+	f.NewSheet(waitTimeSheet) // 新增工作表
 	f.DeleteSheet("Sheet1")
 
 	// 写入表头
@@ -56,6 +57,7 @@ func (dc *DataCollector) CollectAndSave(episodeNumber int) {
 
 	// 收集并写入所有统计数据
 	dc.recordAllStats(f, aircraftSheet, channelSheet, groundSheet)
+	dc.recordWaitTimeDistribution(f, waitTimeSheet) // 写入等待时间分布
 
 	// --- 保存文件 ---
 	// 设置文件名，确保每个 episode 的报告都是独立的
@@ -148,5 +150,34 @@ func (dc *DataCollector) recordAllStats(f *excelize.File, aircraftSheet, channel
 			avgWaitTimeMs, stats.TotalRqTunnel, stats.TotalFailRqTunnel, rqFailRate, stats.UnsentMessages,
 		}
 		_ = f.SetSheetRow(groundSheet, fmt.Sprintf("A%d", i+2), &rowData)
+	}
+}
+
+// recordWaitTimeDistribution 收集所有飞机和地面站的等待时间并写入专用工作表
+func (dc *DataCollector) recordWaitTimeDistribution(f *excelize.File, sheetName string) {
+	// 1. 写入表头
+	header := []string{"WaitTime (ms)"}
+	_ = f.SetSheetRow(sheetName, "A1", &header)
+
+	// 2. 收集所有等待时间
+	var allWaitTimes []time.Duration
+	// 从飞机获取等待时间
+	for _, ac := range dc.aircrafts {
+		waitTimes := ac.GetWaitTimes()
+		allWaitTimes = append(allWaitTimes, waitTimes...)
+	}
+	// 从地面站获取等待时间
+	for _, gcc := range dc.groundStations {
+		waitTimes := gcc.GetWaitTimes()
+		allWaitTimes = append(allWaitTimes, waitTimes...)
+	}
+
+	// 3. 逐行写入数据
+	for i, wt := range allWaitTimes {
+		// 将 time.Duration 转换为毫秒
+		waitTimeMs := float64(wt.Nanoseconds()) / 1e6
+		rowData := []interface{}{waitTimeMs}
+		cell, _ := excelize.CoordinatesToCellName(1, i+2) // A2, A3, ...
+		_ = f.SetSheetRow(sheetName, cell, &rowData)
 	}
 }

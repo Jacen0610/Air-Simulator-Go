@@ -64,6 +64,8 @@ type Aircraft struct {
 	totalRqTunnel     uint64
 	totalFailRqTunnel uint64
 	totalWaitTimeNs   atomic.Int64
+	waitTimes         []time.Duration
+	waitTimesMutex    sync.Mutex
 }
 
 // NewAircraft 创建一个航空器实例的构造函数
@@ -80,6 +82,7 @@ func NewAircraft(icaoAddr, reg, aircraftType, manufacturer, serialNum, airlineCo
 		inboundQueue:            make(chan ACARSMessageInterface, 20),
 		outboundQueue:           make([]outboxItem, 0, 10),
 		ackWaiters:              sync.Map{},
+		waitTimes:               make([]time.Duration, 0, 100),
 	}
 }
 
@@ -285,6 +288,11 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 	if channel.AttemptTransmit(msg, a.CurrentFlightID, config.TransmissionTime) {
 		waitTime := time.Since(item.enqueueTime)
 		a.totalWaitTimeNs.Add(waitTime.Nanoseconds())
+
+		a.waitTimesMutex.Lock()
+		a.waitTimes = append(a.waitTimes, waitTime)
+		a.waitTimesMutex.Unlock()
+
 		log.Printf("✈️  [飞机 %s] 成功抢占信道并发送报文 (ID: %s)。排队等待时间: %s", a.CurrentFlightID, msg.GetBaseMessage().MessageID, waitTime)
 
 		a.removeMessageFromQueue(msg.GetBaseMessage().MessageID)
@@ -328,6 +336,10 @@ func (a *Aircraft) Reset() {
 	atomic.StoreUint64(&a.totalFailRqTunnel, 0)
 	a.totalWaitTimeNs.Store(0)
 
+	a.waitTimesMutex.Lock()
+	a.waitTimes = make([]time.Duration, 0, 100)
+	a.waitTimesMutex.Unlock()
+
 	a.outboundMutex.Lock()
 	a.outboundQueue = make([]outboxItem, 0, 10)
 	a.outboundMutex.Unlock()
@@ -336,6 +348,15 @@ func (a *Aircraft) Reset() {
 		a.ackWaiters.Delete(key)
 		return true
 	})
+}
+
+// GetWaitTimes 返回一个线程安全的等待时间副本
+func (a *Aircraft) GetWaitTimes() []time.Duration {
+	a.waitTimesMutex.Lock()
+	defer a.waitTimesMutex.Unlock()
+	timesCopy := make([]time.Duration, len(a.waitTimes))
+	copy(timesCopy, a.waitTimes)
+	return timesCopy
 }
 
 // AircraftRawStats 定义了用于数据收集的原始统计数据结构
