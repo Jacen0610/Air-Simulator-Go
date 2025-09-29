@@ -15,6 +15,7 @@ type GroundControlCenter struct {
 	ID           string
 	inboundQueue chan ACARSMessageInterface // 自己的内部消息队列
 	outbox       chan OutboxItem            // 自己的消息发件箱
+	metricsChan  chan<- time.Duration       // 用于发送指标的通道 (只写)
 
 	// --- 通信统计 ---
 	totalTxAttempts   uint64       // 总传输尝试次数 (每次尝试获得信道)
@@ -26,11 +27,12 @@ type GroundControlCenter struct {
 }
 
 // NewGroundControlCenter 是 GroundControlCenter 的构造函数。
-func NewGroundControlCenter(id string) *GroundControlCenter {
+func NewGroundControlCenter(id string, metricsChan chan<- time.Duration) *GroundControlCenter {
 	return &GroundControlCenter{
 		ID:           id,
 		inboundQueue: make(chan ACARSMessageInterface, 50), // 为其分配一个带缓冲的队列
 		outbox:       make(chan OutboxItem, 100),           // 初始化发件箱
+		metricsChan:  metricsChan,
 	}
 }
 
@@ -53,17 +55,13 @@ func (gcc *GroundControlCenter) ProcessOutbox(comms *CommunicationSystem) {
 }
 
 // StartListening 启动地面站的监听服务。
-// 它现在向整个通信系统注册自己。
 func (gcc *GroundControlCenter) StartListening(commsSystem *CommunicationSystem) {
-	// 向通信系统注册自己的接收队列
 	commsSystem.RegisterListener(gcc.inboundQueue)
 	log.Printf("🛰️  地面站 [%s] 已启动，开始监听通信系统...", gcc.ID)
 
 	go gcc.ProcessOutbox(commsSystem) // 启动发件箱处理器
 
-	// 开启一个循环，专门处理自己队列中的消息
 	for msg := range gcc.inboundQueue {
-		// 为每个消息启动一个 goroutine 进行处理，以实现并发
 		go gcc.processMessage(msg, commsSystem)
 	}
 }
@@ -72,7 +70,6 @@ func (gcc *GroundControlCenter) StartListening(commsSystem *CommunicationSystem)
 func (gcc *GroundControlCenter) processMessage(msg ACARSMessageInterface, commsSystem *CommunicationSystem) {
 	baseMsg := msg.GetBaseMessage()
 
-	// 如果是自己发出的消息，应当不进行任何操作。
 	if baseMsg.AircraftICAOAddress == gcc.ID {
 		return
 	}
@@ -95,64 +92,71 @@ func (gcc *GroundControlCenter) processMessage(msg ACARSMessageInterface, commsS
 		Type:                MsgTypeAck,
 	}
 
-	// 使用我们为 ACK 创建的专用高优先级构造函数
 	ackMessage, err := NewCriticalPriorityMessage(ackBaseMsg, ackData)
 	if err != nil {
 		log.Printf("错误: [%s] 创建 ACK 报文失败: %v", gcc.ID, err)
 		return
 	}
 
-	// 将 ACK 报文放入发件箱，而不是直接发送
 	gcc.EnqueueMessage(ackMessage)
 }
 
 // SendMessage 使用 p-坚持 CSMA 算法在选定的信道上发送报文。
-// 它会持续尝试直到发送成功。
 func (gcc *GroundControlCenter) SendMessage(item OutboxItem, commsSystem *CommunicationSystem) {
 	msg := item.Message
 	enqueueTime := item.EnqueueTime
 	baseMsg := msg.GetBaseMessage()
 
+	targetChannel := commsSystem.SelectChannelForMessage(msg, gcc.ID)
+	p := targetChannel.GetPForMessage(msg.GetPriority())
+	timeSlotForChannel := targetChannel.GetCurrentTimeSlot()
+
+	// 地面站目前只发送ACK，所以日志可以保持具体
 	log.Printf("🚀 [%s] 准备发送 ACK (ID: %s, Prio: %s)", gcc.ID, baseMsg.MessageID, msg.GetPriority())
 
 	// 地面站将持续尝试发送 ACK 直到成功
 	for {
-		// 1. 在每次循环时都动态选择最佳信道，以适应信道状态变化
-		targetChannel := commsSystem.SelectChannelForMessage(msg, gcc.ID)
-		p := targetChannel.GetPForMessage(msg.GetPriority())
-		timeSlotForChannel := targetChannel.GetCurrentTimeSlot()
+		// [核心修改 2] 发送前检查：在每次尝试发送前，都检查ACK是否已“陈旧”。
+		// 如果因为信道持续拥堵，导致这个ACK从入队(enqueueTime)到当前(Now)的等待时间
+		// 已经超过了飞机的超时阈值，就直接放弃发送，以避免浪费资源并处理下一个消息。
+		if time.Since(enqueueTime) > config.AckTimeout {
+			log.Printf("🗑️  [地面站 %s] 放弃发送陈旧的ACK (for msg: %s)，因信道拥堵等待时间过长。", gcc.ID, baseMsg.MessageID)
+			return // 放弃发送，ProcessOutbox将处理下一个消息
+		}
 
 		atomic.AddUint64(&gcc.totalRqTunnel, 1)
 
 		if !targetChannel.IsBusy() {
 			if rand.Float64() < p {
-				// 只有在概率允许时才真正尝试传输，这构成一次“传输尝试”
 				atomic.AddUint64(&gcc.totalTxAttempts, 1)
 
-				// 尝试传输。ACK的传输时间也使用全局常量
 				if targetChannel.AttemptTransmit(msg, gcc.ID, config.TransmissionTime) {
-					// 发送成功！记录等待时间
 					waitTime := time.Since(enqueueTime)
 					gcc.totalWaitTimeNs.Add(waitTime.Nanoseconds())
 					atomic.AddUint64(&gcc.successfulTx, 1)
+
+					if gcc.metricsChan != nil {
+						select {
+						case gcc.metricsChan <- waitTime:
+						default:
+							log.Printf("⚠️ [地面站 %s] 指标通道已满，本次耗时 %v 未能记录", gcc.ID, waitTime)
+						}
+					}
+
 					log.Printf("✅ [%s] 在信道 [%s] 上成功发送 ACK (ID: %s), 耗时: %v", gcc.ID, targetChannel.ID, baseMsg.MessageID, waitTime)
 					return // 成功发送后退出函数
 				} else {
-					// 发生碰撞
 					atomic.AddUint64(&gcc.totalCollisions, 1)
 					log.Printf("💥 [%s] 在信道 [%s] 上发送 ACK 时发生碰撞！", gcc.ID, targetChannel.ID)
 				}
 			} else {
-				// p-坚持算法决定延迟
 				log.Printf("🤔 [%s] 信道 [%s] 空闲，但决定延迟发送 ACK (p=%.2f)...", gcc.ID, targetChannel.ID, p)
 			}
 		} else {
-			// 信道忙
 			atomic.AddUint64(&gcc.totalFailRqTunnel, 1)
 			log.Printf("⏳ [%s] 发现信道 [%s] 忙，等待发送 ACK...", gcc.ID, targetChannel.ID)
 		}
 
-		// 2. 等待从目标信道获取的专属时隙，然后重试
 		time.Sleep(timeSlotForChannel)
 	}
 }

@@ -49,6 +49,7 @@ type Aircraft struct {
 	inboundQueue chan ACARSMessageInterface // 自己的消息收件箱
 	outbox       chan OutboxItem            // 自己的消息发件箱
 	ackWaiters   sync.Map
+	metricsChan  chan<- time.Duration // [新增] 用于发送指标的通道 (只写)
 
 	// --- 通信统计 ---
 	totalTxAttempts   uint64       // 总传输尝试次数
@@ -61,7 +62,8 @@ type Aircraft struct {
 }
 
 // NewAircraft 创建一个航空器实例的构造函数
-func NewAircraft(icaoAddr, reg, aircraftType, manufacturer, serialNum, airlineCode string) *Aircraft {
+// [修改] 增加 metricsChan 参数
+func NewAircraft(icaoAddr, reg, aircraftType, manufacturer, serialNum, airlineCode string, metricsChan chan<- time.Duration) *Aircraft {
 	return &Aircraft{
 		ICAOAddress:             icaoAddr,
 		Registration:            reg,
@@ -74,6 +76,7 @@ func NewAircraft(icaoAddr, reg, aircraftType, manufacturer, serialNum, airlineCo
 		inboundQueue:            make(chan ACARSMessageInterface, 20), // 初始化收件箱
 		outbox:                  make(chan OutboxItem, 100),           // 初始化发件箱
 		ackWaiters:              sync.Map{},                           // 初始时间
+		metricsChan:             metricsChan,                          // [新增] 赋值
 	}
 }
 
@@ -156,6 +159,19 @@ func (a *Aircraft) SendMessage(item OutboxItem, comms *CommunicationSystem) {
 						// 传输成功，记录从入队到成功抢占信道的总等待时间
 						waitTime := time.Since(enqueueTime)
 						a.totalWaitTimeNs.Add(waitTime.Nanoseconds())
+
+						// [核心修改] 将 waitTime 发送到指标通道
+						// 使用非阻塞发送，以防通道已满或未初始化导致飞机进程卡死
+						if a.metricsChan != nil {
+							select {
+							case a.metricsChan <- waitTime:
+								// 成功发送指标
+							default:
+								// 如果通道已满，则不阻塞，直接丢弃本次指标
+								log.Printf("⚠️ [飞机 %s] 指标通道已满，本次耗时 %v 未能记录", a.CurrentFlightID, waitTime)
+							}
+						}
+
 						log.Printf("🚀 [飞机 %s] 成功发送报文 (ID: %s, Prio: %s)，耗时: %v", a.CurrentFlightID, baseMsg.MessageID, msg.GetPriority(), waitTime)
 						// 跳出CSMA循环，去等待ACK
 						goto waitForAck

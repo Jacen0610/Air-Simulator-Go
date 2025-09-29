@@ -36,18 +36,24 @@ func main() {
 	commsSystem := simulation.NewCommunicationSystem(primaryChannel, backupChannel, config.SwitchoverProbs)
 	commsSystem.StartDispatching() // 启动所有信道的调度器
 
+	// --- 1.5 [新增] 创建用于收集原始指标的通道 ---
+	metricsChan := make(chan time.Duration, 4096) // 使用一个较大的缓冲区
+
 	// --- 2. 创建地面站和飞机 ---
-	groundControl := simulation.NewGroundControlCenter("GND_CTL_MAIN")
+	// [修改] 创建地面站时传入 metricsChan
+	groundControl := simulation.NewGroundControlCenter("GND_CTL_MAIN", metricsChan)
 	go groundControl.StartListening(commsSystem)
 
 	aircraftList := make([]*simulation.Aircraft, simulation.AircraftCount)
 	for i := 0; i < simulation.AircraftCount; i++ {
 		icao := fmt.Sprintf("A%d", 70000+i)
 		flightID := fmt.Sprintf("CES%d", 1001+i)
-		aircraft := simulation.NewAircraft(icao, fmt.Sprintf("B-%d", 6000+i), "A320neo", "Airbus", "MSN1234"+fmt.Sprintf("%d", i), "CES")
+		// [修改] 创建飞机时传入 metricsChan
+		aircraft := simulation.NewAircraft(icao, fmt.Sprintf("B-%d", 6000+i), "A320neo", "Airbus", "MSN1234"+fmt.Sprintf("%d", i), "CES", metricsChan)
 		aircraft.CurrentFlightID = flightID
 		aircraftList[i] = aircraft
 		go aircraft.StartListening(commsSystem)
+
 	}
 	log.Printf("✈️  已成功创建 %d 架飞机.", len(aircraftList))
 
@@ -59,12 +65,14 @@ func main() {
 	collectorWg.Add(1)
 	doneChan := make(chan struct{})
 
+	// [修改] 创建收集器时传入 metricsChan
 	dataCollector := collector.NewDataCollector(
 		&collectorWg,
 		doneChan,
 		aircraftList,
 		channelsToMonitor,
 		groundStationsToMonitor,
+		metricsChan,
 	)
 	go dataCollector.Run()
 
@@ -81,9 +89,13 @@ func main() {
 	log.Println("... 等待 1 分钟以确保所有最终的通信完成 ...")
 	time.Sleep(1 * time.Minute)
 
+	// [修改] 调整关闭顺序，确保数据完整性
+	log.Println("... 正在关闭指标通道，等待数据收集完成 ...")
+	close(metricsChan) // 1. 首先关闭指标通道，通知收集器不再有新数据
+
 	log.Println("... 正在停止数据收集器并保存结果 ...")
-	close(doneChan)    // 发送停止信号
-	collectorWg.Wait() // 等待收集器完成文件保存
+	close(doneChan)    // 2. 然后发送停止信号给收集器的主循环
+	collectorWg.Wait() // 3. 等待收集器完成文件写入
 
 	log.Println("=============================================")
 	log.Println("===========  SIMULATION FINISHED  ===========")

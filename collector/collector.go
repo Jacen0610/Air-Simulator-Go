@@ -27,16 +27,22 @@ type DataCollector struct {
 	wg             *sync.WaitGroup
 	done           <-chan struct{}
 	startTime      time.Time
+
+	// --- [新增] 用于收集原始 waitTime 指标 ---
+	allWaitTimes []time.Duration
+	metricsChan  <-chan time.Duration // 接收指标的通道 (只读)
+	metricsWg    sync.WaitGroup       // 用于等待指标收集goroutine
 }
 
 // NewDataCollector 创建一个新的数据收集器实例。
-// 它接收需要监控的对象列表，而不是任何管理器或系统对象，以实现解耦。
+// [修改] 增加 metricsChan 参数
 func NewDataCollector(
 	wg *sync.WaitGroup,
 	done <-chan struct{},
 	aircrafts []*simulation.Aircraft,
 	channels []*simulation.Channel, // 直接接收信道列表
 	groundStations []*simulation.GroundControlCenter,
+	metricsChan <-chan time.Duration, // [新增]
 ) *DataCollector {
 	// 创建带有时间戳的唯一文件名
 	baseFilename := fmt.Sprintf("simulation_report_%s.xlsx", time.Now().Format("20060102_150405"))
@@ -50,6 +56,9 @@ func NewDataCollector(
 		wg:             wg,
 		done:           done,
 		startTime:      time.Now(),
+		// [新增] 初始化指标收集相关字段
+		allWaitTimes: make([]time.Duration, 0, 20000), // 预分配一些容量
+		metricsChan:  metricsChan,
 	}
 }
 
@@ -57,6 +66,10 @@ func NewDataCollector(
 func (dc *DataCollector) Run() {
 	defer dc.wg.Done()
 	log.Printf("📊 独立数据收集器已启动，将每隔 %v 记录一次快照...", collectionInterval)
+
+	// [新增] 启动一个goroutine专门从metricsChan收集数据
+	dc.metricsWg.Add(1)
+	go dc.collectWaitTimes()
 
 	f := excelize.NewFile()
 	defer func() {
@@ -96,19 +109,52 @@ func (dc *DataCollector) Run() {
 			groundRow = dc.recordGroundStationStats(f, groundSheet, groundRow, simMinutes)
 
 		case <-dc.done:
+			// --- [修改] 接收到停止信号，执行最终的整理和保存 ---
+			log.Println("📊 模拟主程序已结束，等待指标通道关闭...")
+			// main函数会先关闭metricsChan，然后关闭doneChan。
+			// 这里需要等待collectWaitTimes goroutine处理完所有数据。
+			dc.metricsWg.Wait()
+			log.Printf("... 指标通道已处理完毕，共收集到 %d 条原始 WaitTime 数据。", len(dc.allWaitTimes))
 
+			// 记录最终的快照
 			simMinutes := int(time.Since(dc.startTime).Minutes())
-			aircraftRow = dc.recordAircraftStats(f, aircraftSheet, aircraftRow, simMinutes)
-			// 记录所有信道的数据
-			channelRow = dc.recordChannelStats(f, channelSheet, channelRow, simMinutes)
-			// 记录所有地面站的数据
-			groundRow = dc.recordGroundStationStats(f, groundSheet, groundRow, simMinutes)
+			dc.recordAircraftStats(f, aircraftSheet, aircraftRow, simMinutes)
+			dc.recordChannelStats(f, channelSheet, channelRow, simMinutes)
+			dc.recordGroundStationStats(f, groundSheet, groundRow, simMinutes)
 
-			// --- 接收到停止信号，执行最终保存 ---
-			log.Println("✅ 模拟结束，正在整理并保存所有数据到Excel文件...")
+			// [新增] 记录 WaitTime 分布
+			dc.recordWaitTimeDistribution(f)
+
+			log.Println("✅ 正在整理并保存所有数据到Excel文件...")
 			dc.saveReport(f)
 			return // 结束 goroutine
 		}
+	}
+}
+
+// [新增] collectWaitTimes 从指标通道读取数据并存入切片。
+func (dc *DataCollector) collectWaitTimes() {
+	defer dc.metricsWg.Done()
+	for wt := range dc.metricsChan {
+		dc.allWaitTimes = append(dc.allWaitTimes, wt)
+	}
+}
+
+// [新增] recordWaitTimeDistribution 创建一个新工作表并写入所有原始的waitTime数据。
+func (dc *DataCollector) recordWaitTimeDistribution(f *excelize.File) {
+	sheet := "WaitTime_Distribution"
+	f.NewSheet(sheet)
+	log.Printf("📊 正在将 %d 条 WaitTime 分布数据写入 %s 工作表...", len(dc.allWaitTimes), sheet)
+
+	// 写入表头
+	headers := []string{"WaitTime (ms)"}
+	_ = f.SetSheetRow(sheet, "A1", &headers)
+
+	// 写入数据
+	for i, wt := range dc.allWaitTimes {
+		// excelize 期望的是 interface{}，我们直接传入 float64
+		// i+2 是因为Excel行号从1开始，且第1行是表头
+		_ = f.SetCellValue(sheet, fmt.Sprintf("A%d", i+2), float64(wt.Nanoseconds())/1e6)
 	}
 }
 
