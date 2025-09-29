@@ -207,6 +207,7 @@ func (a *Aircraft) SendMessage(item OutboxItem, comms *CommunicationSystem) {
 			return
 		case <-time.After(config.AckTimeout):
 			a.ackWaiters.Delete(baseMsg.MessageID)
+			enqueueTime = time.Now()
 			log.Printf("⏰ [飞机 %s] 等待报文 (ID: %s) 的 ACK 超时！准备重发...", a.CurrentFlightID, baseMsg.MessageID)
 		}
 	}
