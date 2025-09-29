@@ -52,13 +52,14 @@ type Aircraft struct {
 	metricsChan  chan<- time.Duration // [新增] 用于发送指标的通道 (只写)
 
 	// --- 通信统计 ---
-	totalTxAttempts   uint64       // 总传输尝试次数
-	totalCollisions   uint64       // 碰撞
-	successfulTx      uint64       // 成功发送并收到ACK的报文总数
-	totalRetries      uint64       // 总重传次数
-	totalRqTunnel     uint64       // 总尝试请求隧道次数
-	totalFailRqTunnel uint64       // 总失败请求隧道次数
-	totalWaitTimeNs   atomic.Int64 // 总等待时间 (纳秒)
+	totalTxAttempts      uint64       // 总传输尝试次数
+	totalCollisions      uint64       // 碰撞
+	successfulTx         uint64       // 成功发送并收到ACK的报文总数
+	totalRetries         uint64       // 总重传次数
+	totalDroppedMessages uint64       // 因超出最大重传次数而被丢弃的消息总数
+	totalRqTunnel        uint64       // 总尝试请求隧道次数
+	totalFailRqTunnel    uint64       // 总失败请求隧道次数
+	totalWaitTimeNs      atomic.Int64 // 总等待时间 (纳秒)
 }
 
 // NewAircraft 创建一个航空器实例的构造函数
@@ -213,6 +214,7 @@ func (a *Aircraft) SendMessage(item OutboxItem, comms *CommunicationSystem) {
 	}
 
 	log.Printf("❌ [飞机 %s] 报文 (ID: %s) 发送失败，已达到最大重试次数。", a.CurrentFlightID, baseMsg.MessageID)
+	atomic.AddUint64(&a.totalDroppedMessages, 1)
 }
 
 func (a *Aircraft) ResetStats() {
@@ -220,28 +222,31 @@ func (a *Aircraft) ResetStats() {
 	atomic.StoreUint64(&a.totalCollisions, 0)
 	atomic.StoreUint64(&a.successfulTx, 0)
 	atomic.StoreUint64(&a.totalRetries, 0)
+	atomic.StoreUint64(&a.totalDroppedMessages, 0)
 	a.totalWaitTimeNs.Store(0)
 }
 
 // AircraftRawStats Excel自动统计需要以下两个函数
 type AircraftRawStats struct {
-	SuccessfulTx      uint64
-	TotalTxAttempts   uint64
-	TotalCollisions   uint64
-	TotalRetries      uint64
-	TotalRqTunnel     uint64
-	TotalFailRqTunnel uint64
-	TotalWaitTime     time.Duration
+	SuccessfulTx         uint64
+	TotalTxAttempts      uint64
+	TotalCollisions      uint64
+	TotalRetries         uint64
+	TotalDroppedMessages uint64
+	TotalRqTunnel        uint64
+	TotalFailRqTunnel    uint64
+	TotalWaitTime        time.Duration
 }
 
 func (a *Aircraft) GetRawStats() AircraftRawStats {
 	return AircraftRawStats{
-		SuccessfulTx:      atomic.LoadUint64(&a.successfulTx),
-		TotalTxAttempts:   atomic.LoadUint64(&a.totalTxAttempts),
-		TotalCollisions:   atomic.LoadUint64(&a.totalCollisions),
-		TotalRetries:      atomic.LoadUint64(&a.totalRetries),
-		TotalRqTunnel:     atomic.LoadUint64(&a.totalRqTunnel),
-		TotalFailRqTunnel: atomic.LoadUint64(&a.totalFailRqTunnel),
-		TotalWaitTime:     time.Duration(a.totalWaitTimeNs.Load()),
+		SuccessfulTx:         atomic.LoadUint64(&a.successfulTx),
+		TotalTxAttempts:      atomic.LoadUint64(&a.totalTxAttempts),
+		TotalCollisions:      atomic.LoadUint64(&a.totalCollisions),
+		TotalRetries:         atomic.LoadUint64(&a.totalRetries),
+		TotalDroppedMessages: atomic.LoadUint64(&a.totalDroppedMessages),
+		TotalRqTunnel:        atomic.LoadUint64(&a.totalRqTunnel),
+		TotalFailRqTunnel:    atomic.LoadUint64(&a.totalFailRqTunnel),
+		TotalWaitTime:        time.Duration(a.totalWaitTimeNs.Load()),
 	}
 }

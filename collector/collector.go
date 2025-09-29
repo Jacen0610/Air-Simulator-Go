@@ -160,14 +160,14 @@ func (dc *DataCollector) recordWaitTimeDistribution(f *excelize.File) {
 
 // writeHeaders 负责向Excel文件写入表头。
 func (dc *DataCollector) writeHeaders(f *excelize.File, aircraftSheet, channelSheet, groundSheet string) {
-	headersAircraft := []string{"SimTime (min)", "航班号", "成功传输", "重传", "尝试传输", "碰撞次数", "碰撞率 (%)",
+	headersAircraft := []string{"SimTime (min)", "航班号", "成功传输", "重传", "丢弃消息数", "尝试传输", "碰撞次数", "碰撞率 (%)",
 		"平均等待时间 (ms)", "请求信道", "失败请求信道", "请求信道失败率 (%)"}
 	_ = f.SetSheetRow(aircraftSheet, "A1", &headersAircraft)
 
 	headersChannel := []string{"SimTime (min)", "信道", "是否启用", "成功传输", "信道使用时间 (ms)", "信道使用率 (%)"}
 	_ = f.SetSheetRow(channelSheet, "A1", &headersChannel)
 
-	headersGround := []string{"SimTime (min)", "地面站名", "成功传输", "尝试传输", "碰撞次数", "碰撞率 (%)",
+	headersGround := []string{"SimTime (min)", "地面站名", "成功传输", "丢弃消息数", "尝试传输", "碰撞次数", "碰撞率 (%)",
 		"平均等待时间 (ms)", "请求信道", "失败请求信道", "请求信道失败率 (%)"}
 	_ = f.SetSheetRow(groundSheet, "A1", &headersGround)
 }
@@ -190,7 +190,7 @@ func (dc *DataCollector) recordAircraftStats(f *excelize.File, sheet string, sta
 		}
 
 		rowData := []interface{}{
-			simMinutes, ac.CurrentFlightID, stats.SuccessfulTx, stats.TotalRetries, stats.TotalTxAttempts, stats.TotalCollisions, collisionRate,
+			simMinutes, ac.CurrentFlightID, stats.SuccessfulTx, stats.TotalRetries, stats.TotalDroppedMessages, stats.TotalTxAttempts, stats.TotalCollisions, collisionRate,
 			avgWaitTimeMs, stats.TotalRqTunnel, stats.TotalFailRqTunnel, rqFailRate,
 		}
 		_ = f.SetSheetRow(sheet, fmt.Sprintf("A%d", row), &rowData)
@@ -247,7 +247,7 @@ func (dc *DataCollector) recordGroundStationStats(f *excelize.File, sheet string
 		}
 
 		rowData := []interface{}{
-			simMinutes, gcc.ID, stats.SuccessfulTx, stats.TotalTxAttempts, stats.TotalCollisions, collisionRate,
+			simMinutes, gcc.ID, stats.SuccessfulTx, stats.TotalDroppedMessages, stats.TotalTxAttempts, stats.TotalCollisions, collisionRate,
 			avgWaitTimeMs, stats.TotalRqTunnel, stats.TotalFailRqTunnel, rqFailRate,
 		}
 		_ = f.SetSheetRow(sheet, fmt.Sprintf("A%d", row), &rowData)

@@ -1,4 +1,3 @@
-// C:/workspace/go/Air-Simulator-Go/simulation/center.go
 package simulation
 
 import (
@@ -18,12 +17,13 @@ type GroundControlCenter struct {
 	metricsChan  chan<- time.Duration       // 用于发送指标的通道 (只写)
 
 	// --- 通信统计 ---
-	totalTxAttempts   uint64       // 总传输尝试次数 (每次尝试获得信道)
-	totalCollisions   uint64       // 碰撞/信道访问失败次数
-	successfulTx      uint64       // 成功发送并收到ACK的报文总数
-	totalRqTunnel     uint64       // 总请求隧道次数
-	totalFailRqTunnel uint64       // 失败请求隧道次数
-	totalWaitTimeNs   atomic.Int64 // 总等待时间 (纳秒)
+	totalTxAttempts      uint64       // 总传输尝试次数 (每次尝试获得信道)
+	totalCollisions      uint64       // 碰撞/信道访问失败次数
+	successfulTx         uint64       // 成功发送并收到ACK的报文总数
+	totalDroppedMessages uint64       // 因超时而被丢弃的ACK消息总数
+	totalRqTunnel        uint64       // 总请求隧道次数
+	totalFailRqTunnel    uint64       // 失败请求隧道次数
+	totalWaitTimeNs      atomic.Int64 // 总等待时间 (纳秒)
 }
 
 // NewGroundControlCenter 是 GroundControlCenter 的构造函数。
@@ -121,6 +121,7 @@ func (gcc *GroundControlCenter) SendMessage(item OutboxItem, commsSystem *Commun
 		// 已经超过了飞机的超时阈值，就直接放弃发送，以避免浪费资源并处理下一个消息。
 		if time.Since(enqueueTime) > config.AckTimeout {
 			log.Printf("🗑️  [地面站 %s] 放弃发送陈旧的ACK (for msg: %s)，因信道拥堵等待时间过长。", gcc.ID, baseMsg.MessageID)
+			atomic.AddUint64(&gcc.totalDroppedMessages, 1)
 			return // 放弃发送，ProcessOutbox将处理下一个消息
 		}
 
@@ -166,6 +167,7 @@ func (gcc *GroundControlCenter) ResetStats() {
 	atomic.StoreUint64(&gcc.totalTxAttempts, 0)
 	atomic.StoreUint64(&gcc.totalCollisions, 0)
 	atomic.StoreUint64(&gcc.successfulTx, 0)
+	atomic.StoreUint64(&gcc.totalDroppedMessages, 0)
 	atomic.StoreUint64(&gcc.totalRqTunnel, 0)
 	atomic.StoreUint64(&gcc.totalFailRqTunnel, 0)
 	gcc.totalWaitTimeNs.Store(0)
@@ -173,22 +175,24 @@ func (gcc *GroundControlCenter) ResetStats() {
 
 // GroundControlRawStats 定义了用于数据收集的原始统计数据结构。
 type GroundControlRawStats struct {
-	SuccessfulTx      uint64
-	TotalTxAttempts   uint64
-	TotalCollisions   uint64
-	TotalRqTunnel     uint64
-	TotalFailRqTunnel uint64
-	TotalWaitTimeNs   time.Duration
+	SuccessfulTx         uint64
+	TotalTxAttempts      uint64
+	TotalCollisions      uint64
+	TotalDroppedMessages uint64
+	TotalRqTunnel        uint64
+	TotalFailRqTunnel    uint64
+	TotalWaitTimeNs      time.Duration
 }
 
 // GetRawStats 返回原始统计数据，用于写入报告。
 func (gcc *GroundControlCenter) GetRawStats() GroundControlRawStats {
 	return GroundControlRawStats{
-		SuccessfulTx:      atomic.LoadUint64(&gcc.successfulTx),
-		TotalTxAttempts:   atomic.LoadUint64(&gcc.totalTxAttempts),
-		TotalCollisions:   atomic.LoadUint64(&gcc.totalCollisions),
-		TotalRqTunnel:     atomic.LoadUint64(&gcc.totalRqTunnel),
-		TotalFailRqTunnel: atomic.LoadUint64(&gcc.totalFailRqTunnel),
-		TotalWaitTimeNs:   time.Duration(gcc.totalWaitTimeNs.Load()),
+		SuccessfulTx:         atomic.LoadUint64(&gcc.successfulTx),
+		TotalTxAttempts:      atomic.LoadUint64(&gcc.totalTxAttempts),
+		TotalCollisions:      atomic.LoadUint64(&gcc.totalCollisions),
+		TotalDroppedMessages: atomic.LoadUint64(&gcc.totalDroppedMessages),
+		TotalRqTunnel:        atomic.LoadUint64(&gcc.totalRqTunnel),
+		TotalFailRqTunnel:    atomic.LoadUint64(&gcc.totalFailRqTunnel),
+		TotalWaitTimeNs:      time.Duration(gcc.totalWaitTimeNs.Load()),
 	}
 }
