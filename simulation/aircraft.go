@@ -247,7 +247,7 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 			// 新的惩罚公式: 基础惩罚 + 队列长度惩罚 + 等待时间惩罚
 			// 队列越长，智能体不作为的“机会成本”就越高，惩罚也应越大。
 			// 我们可以为队列中的每条消息设置一个惩罚因子。
-			const queueLengthPenaltyFactor = 1.5
+			const queueLengthPenaltyFactor = 5
 			const timePenaltyFactor = 2.0
 
 			penalty := 1.0 + (float32(queueLen) * queueLengthPenaltyFactor) + (waitTime * timePenaltyFactor)

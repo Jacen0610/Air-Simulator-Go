@@ -181,10 +181,21 @@ func (gcc *GroundControlCenter) Step(action AgentAction, comms *CommunicationSys
 	switch action {
 	case ActionWait:
 		if comms.PrimaryChannel.IsBusy() && (comms.BackupChannel == nil || comms.BackupChannel.IsBusy()) {
+			// If all channels are busy, waiting is a reasonable action, apply a small penalty for time cost.
 			reward -= 0.5
 		} else {
+			// If channels are free, penalize waiting based on queue length and wait time.
+			gcc.outboundMutex.RLock()
+			queueLen := len(gcc.outboundQueue)
+			gcc.outboundMutex.RUnlock()
+
 			waitTime := float32(time.Since(itemToSend.enqueueTime).Seconds())
-			penalty := 2.0 + waitTime*2.5
+
+			// Consistent penalty formula with aircraft.go
+			const queueLengthPenaltyFactor = 10
+			const timePenaltyFactor = 2.0
+
+			penalty := (float32(queueLen) * queueLengthPenaltyFactor) + (waitTime * timePenaltyFactor)
 			reward -= penalty
 		}
 
