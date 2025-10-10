@@ -2,7 +2,6 @@
 package simulation
 
 import (
-	"Air-Simulator/config"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -30,41 +29,19 @@ type Channel struct {
 	totalBusyTime            time.Duration
 	lastBusyTimestamp        time.Time
 
-	// --- 可动态更新的 p-value 策略 ---
-	pValues      map[config.Priority]float64
-	pValuesMutex sync.RWMutex
-
 	// --- 时隙 (TimeSlot) ---
 	currentTimeSlot time.Duration
 	timeSlotMutex   sync.RWMutex
 }
 
 // NewChannel 是 Channel 的构造函数。
-func NewChannel(id string, initialPMap map[config.Priority]float64, initialTimeSlot time.Duration) *Channel {
+func NewChannel(id string, initialTimeSlot time.Duration) *Channel {
 	return &Channel{
 		ID:              id,
 		messageQueue:    make(chan ACARSMessageInterface, 100),
 		listeners:       make([]chan<- ACARSMessageInterface, 0),
-		pValues:         initialPMap,
 		currentTimeSlot: initialTimeSlot,
 	}
-}
-
-func (c *Channel) UpdatePValues(newPMap map[config.Priority]float64) {
-	c.pValuesMutex.Lock()
-	defer c.pValuesMutex.Unlock()
-	c.pValues = newPMap
-	log.Printf("🔄 信道 [%s] 的 p-map 已更新。", c.ID)
-}
-
-// GetPForMessage 为给定的优先级获取当前的 p-value。
-func (c *Channel) GetPForMessage(priority config.Priority) float64 {
-	c.pValuesMutex.RLock()
-	defer c.pValuesMutex.RUnlock()
-	if p, ok := c.pValues[config.Priority(priority)]; ok {
-		return p
-	}
-	return 0.1 // 返回一个安全的默认值
 }
 
 // UpdateCurrentTimeSlot 允许动态更新时隙。

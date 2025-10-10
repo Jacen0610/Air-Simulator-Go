@@ -11,7 +11,7 @@ const (
 	HighPriority     Priority = "HIGH"
 	CriticalPriority Priority = "CRITICAL"
 	LowPriority      Priority = "LOW"
-	MediumPriority   Priority = "Medium"
+	MediumPriority   Priority = "MEDIUM"
 )
 
 type PriorityPMap map[Priority]float64
@@ -20,39 +20,12 @@ type PriorityPMap map[Priority]float64
 //                           模拟总开关
 // ===================================================================
 
-// EnableBackupChannel 控制是否启用备用信道。
-// true: 启用双信道模式，高优先级消息在主信道忙时可使用备用信道。
-// false: 恢复为传统的单信道模式。
-const EnableBackupChannel = false
-
 // ===================================================================
 //                       P-Persistence & Channel Switching
 // ===================================================================
 
-// PrimaryPMap 定义了主信道的 p-坚持 概率。
-var PrimaryPMap = PriorityPMap{
-	CriticalPriority: 0.05,
-	HighPriority:     0.05,
-	MediumPriority:   0.05,
-	LowPriority:      0.05,
-}
-
-// BackupPMap 定义了备用信道的 p-坚持 概率。
-// 它被配置为只高效处理高优先级消息。
-var BackupPMap = PriorityPMap{
-	CriticalPriority: 0.05,
-	HighPriority:     0.05,
-	MediumPriority:   0.05,
-	LowPriority:      0.05,
-}
-
-// SwitchoverProbs 定义了当主信道忙碌时，不同优先级的消息切换到备用信道的概率。
-var SwitchoverProbs = map[Priority]float64{
-	CriticalPriority: 1.0, // 紧急报文: 100% 尝试切换
-	HighPriority:     1.0, // 高优先级报文: 80% 尝试切换
-	MediumPriority:   1.0, // 中优先级报文: 30% 尝试切换
-	LowPriority:      1.0, // 低优先级报文: 几乎不切换
-}
+var CSMA_PLAINE = 0.05
+var CSMA_CHANNEL = 0.05
 
 // ===================================================================
 //                           通信参数
@@ -86,14 +59,14 @@ const (
 	FlightDuration = 30 * time.Minute
 
 	// PosReportInterval 定义了例行位置报告的发送间隔。
-	PosReportInterval = 5 * time.Minute
+	PosReportInterval = 2 * time.Minute
 
 	// TaxiTime 定义了飞机在地面滑行所需的时间。
-	TaxiTime = 4 * time.Minute
+	TaxiTime = 1 * time.Minute
 
 	// FuelReportInterval 定义了燃油状态报告的发送间隔。
-	FuelReportInterval = 10 * time.Minute
+	FuelReportInterval = 3 * time.Minute
 
 	// WeatherReportInterval 定义了气象数据报告的发送间隔。
-	WeatherReportInterval = 8 * time.Minute
+	WeatherReportInterval = 4 * time.Minute
 )
