@@ -39,7 +39,6 @@ func main() {
 	// --- 2. 创建地面站和飞机 ---
 	groundControl := simulation.NewGroundControlCenter("GND_CTL_MAIN")
 	go groundControl.StartListening(commsSystem) // 地面站现在自主运行
-	// groundControl.StartSending(commsSystem) // StartListening 内部会启动 StartSending
 
 	aircraftList := make([]*simulation.Aircraft, simulation.AircraftCount)
 	for i := 0; i < simulation.AircraftCount; i++ {

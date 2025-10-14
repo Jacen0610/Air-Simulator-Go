@@ -49,7 +49,7 @@ func (g *TrafficGenerator) Start() {
 		log.Printf("🚦 [流量生成器 %s] 已启动。", g.ID)
 
 		// 模式切换的计时器
-		modeTicker := time.NewTicker(2 * time.Minute) // 每2分钟切换一次模式
+		modeTicker := time.NewTicker(5 * time.Minute) // 每2分钟切换一次模式
 		defer modeTicker.Stop()
 
 		// 消息生成的计时器
