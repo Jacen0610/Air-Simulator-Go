@@ -1,35 +1,27 @@
 package simulation
 
-// AgentAction 代表一个智能体在一个时间步内可以执行的离散动作。
+// [修改后] AgentAction 代表一个智能体在一个时间步内可以执行的离散动作。
+// 简化为2个动作，以适应单信道模式。
 type AgentAction int
 
 const (
-	// ActionWait 代表智能体选择等待，继续监听信道。
+	// ActionWait 代表智能体选择等待，不执行任何操作。
 	ActionWait AgentAction = iota // 值为 0
-	// ActionSendPrimary 代表智能体尝试在主信道发送其最高优先级的消息。
-	ActionSendPrimary // 值为 1
-	// ActionSendBackup 代表智能体尝试在备用信道发送其最高优先级的消息。
-	ActionSendBackup // 值为 2
+	// ActionSend 代表智能体尝试在主信道发送其最高优先级的消息。
+	ActionSend // 值为 1
 )
 
 // AgentObservation 代表一个智能体在特定时刻能够感知到的环境信息。
-// 这就是神经网络的输入。
+// 这将作为强化学习模型的输入。
+// (此结构体维持原样，因为它与 .proto 文件中的定义匹配)
 type AgentObservation struct {
-	HasMessage bool `json:"has_message"`
-	// [核心修改] 移除了 TopMessagePriority
-	PrimaryChannelBusy  bool  `json:"primary_channel_busy"`
-	BackupChannelBusy   bool  `json:"backup_channel_busy"`
-	OutboundQueueLength int32 `json:"outbound_queue_length"`
-	PendingAcksCount    int32 `json:"pending_acks_count"`
-	// [核心修改] 新增了与奖励函数密切相关的状态
+	HasMessage                bool    `json:"has_message"`
+	PrimaryChannelBusy        bool    `json:"primary_channel_busy"`
+	BackupChannelBusy         bool    `json:"backup_channel_busy"`
+	OutboundQueueLength       int32   `json:"outbound_queue_length"`
+	PendingAcksCount          int32   `json:"pending_acks_count"`
 	TopMessageWaitTimeSeconds float32 `json:"top_message_wait_time_seconds"`
 	IsRetransmission          bool    `json:"is_retransmission"`
 }
 
-// StepResult 封装了单个智能体执行一个动作后的完整结果。
-type StepResult struct {
-	Observation AgentObservation
-	Reward      float32
-	Done        bool // 标志着一个 episode 是否结束
-	Info        map[string]interface{}
-}
+// [移除] StepResult 结构体已被移除，因为它在 gRPC 服务实现中不是必需的。

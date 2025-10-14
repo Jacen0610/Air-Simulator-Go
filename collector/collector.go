@@ -87,7 +87,7 @@ func (dc *DataCollector) writeHeaders(f *excelize.File, aircraftSheet, channelSh
 	headersChannel := []string{"信道", "是否启用", "成功传输", "信道使用时间 (ms)", "信道使用率 (%)"}
 	_ = f.SetSheetRow(channelSheet, "A1", &headersChannel)
 
-	headersGround := []string{"地面站名", "成功传输", "尝试传输", "碰撞次数", "碰撞率 (%)", "平均等待时间 (ms)", "请求信道", "失败请求信道", "请求信道失败率 (%)", "未发送消息数"}
+	headersGround := []string{"地面站名", "成功传输", "尝试传输", "碰撞次数", "碰撞率 (%)", "平均等待时间 (ms)", "请求信道", "失败请求信道", "请求信道失败率 (%)"}
 	_ = f.SetSheetRow(groundSheet, "A1", &headersGround)
 }
 
@@ -143,11 +143,11 @@ func (dc *DataCollector) recordAllStats(f *excelize.File, aircraftSheet, channel
 		}
 		var avgWaitTimeMs float64
 		if stats.SuccessfulTx > 0 {
-			avgWaitTimeMs = float64(stats.TotalWaitTime.Milliseconds()) / float64(stats.SuccessfulTx)
+			avgWaitTimeMs = float64(stats.TotalWaitTimeNs.Milliseconds()) / float64(stats.SuccessfulTx)
 		}
 		rowData := []interface{}{
 			gcc.ID, stats.SuccessfulTx, stats.TotalTxAttempts, stats.TotalCollisions, collisionRate,
-			avgWaitTimeMs, stats.TotalRqTunnel, stats.TotalFailRqTunnel, rqFailRate, stats.UnsentMessages,
+			avgWaitTimeMs, stats.TotalRqTunnel, stats.TotalFailRqTunnel, rqFailRate,
 		}
 		_ = f.SetSheetRow(groundSheet, fmt.Sprintf("A%d", i+2), &rowData)
 	}
@@ -164,11 +164,6 @@ func (dc *DataCollector) recordWaitTimeDistribution(f *excelize.File, sheetName 
 	// 从飞机获取等待时间
 	for _, ac := range dc.aircrafts {
 		waitTimes := ac.GetWaitTimes()
-		allWaitTimes = append(allWaitTimes, waitTimes...)
-	}
-	// 从地面站获取等待时间
-	for _, gcc := range dc.groundStations {
-		waitTimes := gcc.GetWaitTimes()
 		allWaitTimes = append(allWaitTimes, waitTimes...)
 	}
 

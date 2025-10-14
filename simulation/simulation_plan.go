@@ -13,41 +13,13 @@ import (
 type FlightPlan struct {
 	Aircraft         *Aircraft
 	StartTimeMinutes int    // 从模拟开始计算的起飞/进入空域时间 (分钟)
-	Type             string // "Departing" (离港), "Arriving" (进港) 或 "Cruising" (巡航)
+	Type             string // "Departing" (离港), "Arriving" (进港), "Cruising" (巡航), "FULL" (完整飞行)
 }
 
-// flightPlans 变量 (无变化)
+// flightPlans 变量 (修改后)
 var flightPlans = []FlightPlan{
-	// 25架飞机的飞行计划
-	{Type: "Departing", StartTimeMinutes: 1},
-	{Type: "Departing", StartTimeMinutes: 3},
-	{Type: "Departing", StartTimeMinutes: 6},
-	{Type: "Departing", StartTimeMinutes: 11},
-	{Type: "Departing", StartTimeMinutes: 15},
-
-	{Type: "Departing", StartTimeMinutes: 16},
-	{Type: "Departing", StartTimeMinutes: 19},
-	{Type: "Departing", StartTimeMinutes: 23},
-	{Type: "Departing", StartTimeMinutes: 25},
-	{Type: "Departing", StartTimeMinutes: 28},
-
-	{Type: "Arriving", StartTimeMinutes: 2},
-	{Type: "Arriving", StartTimeMinutes: 6},
-	{Type: "Arriving", StartTimeMinutes: 9},
-	{Type: "Arriving", StartTimeMinutes: 10},
-	{Type: "Arriving", StartTimeMinutes: 13},
-
-	{Type: "Arriving", StartTimeMinutes: 18},
-	{Type: "Arriving", StartTimeMinutes: 22},
-	{Type: "Arriving", StartTimeMinutes: 24},
-	{Type: "Arriving", StartTimeMinutes: 26},
-	{Type: "Arriving", StartTimeMinutes: 27},
-
-	{Type: "Cruising", StartTimeMinutes: 4},
-	{Type: "Cruising", StartTimeMinutes: 7},
-	{Type: "Cruising", StartTimeMinutes: 12},
-	{Type: "Cruising", StartTimeMinutes: 20},
-	{Type: "Cruising", StartTimeMinutes: 29},
+	// 单架飞机完成一次完整的起降巡航飞行计划
+	{Type: "FULL", StartTimeMinutes: 1},
 }
 
 var AircraftCount = len(flightPlans)
@@ -90,8 +62,104 @@ func simulateFlight(plan FlightPlan, wg *sync.WaitGroup) {
 	time.Sleep(startTime)
 	log.Printf("🛫 [飞机 %s] 飞行计划启动。类型: %s, 计划开始于 %d 分钟", plan.Aircraft.CurrentFlightID, plan.Type, plan.StartTimeMinutes)
 
-	// 2. 根据飞行计划类型执行不同的通信逻辑 (这部分代码保持不变)
-	if plan.Type == "Departing" {
+	// 2. 根据飞行计划类型执行不同的通信逻辑
+	if plan.Type == "FULL" {
+		// ########### 起飞阶段 ###########
+		log.Printf("🛫 [飞机 %s] 开始执行起飞程序...", plan.Aircraft.CurrentFlightID)
+		sendOOOIMessage(plan.Aircraft, "OUT", time.Now()) // 推出
+		time.Sleep(config.TaxiTime)                       // 滑行
+		sendOOOIMessage(plan.Aircraft, "OFF", time.Now()) // 起飞
+
+		// --- 起飞后5分钟，每分钟发送引擎报告 ---
+		log.Printf("✈️  [飞机 %s] 进入起飞后初始爬升阶段，将持续报告引擎状况...", plan.Aircraft.CurrentFlightID)
+		engineReportTickerTakeoff := time.NewTicker(30 * time.Second)
+		engineReportTimerTakeoff := time.NewTimer(5 * time.Minute)
+	fullInitialClimbLoop:
+		for {
+			select {
+			case <-engineReportTickerTakeoff.C:
+				sendEngineReport(plan.Aircraft)
+			case <-engineReportTimerTakeoff.C:
+				engineReportTickerTakeoff.Stop()
+				time.Sleep(30 * time.Second)
+				break fullInitialClimbLoop
+			}
+		}
+		log.Printf("✈️  [飞机 %s] 初始爬升阶段结束，准备进入巡航。", plan.Aircraft.CurrentFlightID)
+
+		// ########### 巡航阶段 ###########
+		log.Printf("✈️  [飞机 %s] 进入巡航阶段...", plan.Aircraft.CurrentFlightID)
+		sendATKMessage(plan.Aircraft, "MAINTAIN FL350") // 进入巡航时发送指令
+
+		// --- 模拟30分钟的巡航飞行，包含多种报告 ---
+		posTickerCruise := time.NewTicker(config.PosReportInterval)
+		fuelTickerCruise := time.NewTicker(config.FuelReportInterval)
+		weatherTickerCruise := time.NewTicker(config.WeatherReportInterval)
+		flightTimerCruise := time.NewTimer(config.FlightDuration)
+
+	fullFlightLoopCruise:
+		for {
+			select {
+			case <-posTickerCruise.C:
+				sendPositionReport(plan.Aircraft)
+			case <-fuelTickerCruise.C:
+				sendFuelReport(plan.Aircraft)
+			case <-weatherTickerCruise.C:
+				sendWeatherReport(plan.Aircraft)
+			case <-flightTimerCruise.C:
+				time.Sleep(30 * time.Second)
+				break fullFlightLoopCruise
+			}
+		}
+		posTickerCruise.Stop()
+		fuelTickerCruise.Stop()
+		weatherTickerCruise.Stop()
+		flightTimerCruise.Stop()
+
+		sendATKMessage(plan.Aircraft, "DESCEND AND MAINTAIN FL240") // 巡航结束时发送指令
+		log.Printf("✈️  [飞机 %s] 巡航结束，准备进入降落程序。", plan.Aircraft.CurrentFlightID)
+
+		// ########### 降落阶段 ###########
+		log.Printf("🛬 [飞机 %s] 开始执行降落程序...", plan.Aircraft.CurrentFlightID)
+		sendPositionReport(plan.Aircraft) // 进入近场时首先报告位置
+
+		landingReportTicker := time.NewTicker(30 * time.Second)
+		landingReportTimer := time.NewTimer(5 * time.Minute)
+	fullLandingLoop:
+		for {
+			select {
+			case <-landingReportTicker.C:
+				sendPositionReport(plan.Aircraft)
+			case <-landingReportTimer.C:
+				landingReportTicker.Stop()
+				time.Sleep(30 * time.Second)
+				break fullLandingLoop
+			}
+		}
+
+		sendOOOIMessage(plan.Aircraft, "ON", time.Now()) // 降落
+		// --- 降落后5分钟，每分钟发送引擎报告 ---
+		log.Printf("🛬 [飞机 %s] 完成降落，将持续报告引擎反推及冷却状况...", plan.Aircraft.CurrentFlightID)
+		engineReportTickerLanding := time.NewTicker(1 * time.Minute)
+		engineReportTimerLanding := time.NewTimer(5 * time.Minute)
+	fullLandingRollLoop:
+		for {
+			select {
+			case <-engineReportTickerLanding.C:
+				sendEngineReport(plan.Aircraft)
+			case <-engineReportTimerLanding.C:
+				engineReportTickerLanding.Stop()
+				time.Sleep(30 * time.Second)
+				break fullLandingRollLoop
+			}
+		}
+
+		// 滑行至停机位
+		sendOOOIMessage(plan.Aircraft, "IN", time.Now()) // 到达
+		time.Sleep(30 * time.Second)
+		log.Printf("🛬 [飞机 %s] 已成功降落并抵达停机位。完整飞行计划结束。", plan.Aircraft.CurrentFlightID)
+
+	} else if plan.Type == "Departing" {
 		// 离港飞机流程
 		sendOOOIMessage(plan.Aircraft, "OUT", time.Now()) // 推出
 		time.Sleep(config.TaxiTime)                       // 滑行

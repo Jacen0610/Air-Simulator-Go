@@ -7,155 +7,120 @@ import (
 	"Air-Simulator/simulation"
 	"context"
 	"log"
-	"sync"
 	"sync/atomic"
 )
 
-// agent 接口统一定义了飞机和地面站的行为，方便在服务器中统一处理
+// agent 接口定义了智能体的行为。
+// 在当前单智能体场景下，这主要指代飞机。
 type agent interface {
 	Step(action simulation.AgentAction, comms *simulation.CommunicationSystem) float32
 	GetObservation(comms *simulation.CommunicationSystem) simulation.AgentObservation
-	Reset() // 使用新的、更彻底的 Reset 方法
+	Reset()
 }
 
-// Server 结构体实现了在 simulator.proto 中定义的 SimulatorServer 接口。
+// [修改后] Server 结构体实现了新的单智能体 gRPC 接口。
 type Server struct {
-	proto.UnimplementedSimulatorServer // 必须嵌入，以实现向前兼容
+	proto.UnimplementedSimulatorServer
 
 	// --- 模拟组件 ---
-	commsSystem    *simulation.CommunicationSystem
-	aircraftList   []*simulation.Aircraft
-	groundStations []*simulation.GroundControlCenter
-	agents         map[string]agent // 使用 agent 接口来统一存储飞机和地面站
-	dataCollector  *collector.DataCollector
+	commsSystem      *simulation.CommunicationSystem
+	aircraftAgent    agent                  // [修改] 直接引用唯一的飞机智能体
+	aircraftList     []*simulation.Aircraft // [保留] 用于传递给 simulation.RunSimulationSession
+	dataCollector    *collector.DataCollector
+	trafficGenerator *simulation.TrafficGenerator // [新增] 背景流量生成器
 
 	// --- 状态管理 ---
-	agentMutex        sync.RWMutex
-	simulationRunning atomic.Bool  // 标记飞行计划是否正在运行
-	episodeCounter    atomic.Int64 // 用于记录 episode 编号
+	simulationRunning atomic.Bool
+	episodeCounter    atomic.Int64
 }
 
-// NewServer 是 Server 的构造函数。
+// [修改后] NewServer 是 Server 的构造函数，适配单智能体场景。
 func NewServer(
 	comms *simulation.CommunicationSystem,
 	aircrafts []*simulation.Aircraft,
-	groundStations []*simulation.GroundControlCenter,
 	collector *collector.DataCollector,
+	trafficGen *simulation.TrafficGenerator, // [新增] 接收流量生成器
 ) *Server {
-	s := &Server{
-		commsSystem:    comms,
-		aircraftList:   aircrafts,
-		groundStations: groundStations,
-		agents:         make(map[string]agent),
-		dataCollector:  collector,
+	if len(aircrafts) != 1 {
+		// 在单智能体模式下，我们期望只有一个飞机实例。
+		// 使用 log.Fatalf 会导致程序立即退出，这在初始化阶段是合理的。
+		log.Fatalf("错误: 服务器期望一个飞机智能体，但收到了 %d 个。", len(aircrafts))
 	}
 
-	// 将所有飞机注册为 agent
-	for _, ac := range aircrafts {
-		s.agents[ac.CurrentFlightID] = ac
-	}
-	// 将所有地面站注册为 agent
-	for _, gcc := range groundStations {
-		s.agents[gcc.ID] = gcc
+	s := &Server{
+		commsSystem:      comms,
+		aircraftAgent:    aircrafts[0], // [修改] 直接将第一个（也是唯一一个）飞机设为 agent
+		aircraftList:     aircrafts,
+		dataCollector:    collector,
+		trafficGenerator: trafficGen, // [新增] 存储流量生成器实例
 	}
 
 	return s
 }
 
-// Step 是 gRPC 的 Step 方法的实现。
+// [修改后] Step 是 gRPC Step 方法的实现，适配单智能体。
 func (s *Server) Step(ctx context.Context, req *proto.StepRequest) (*proto.StepResponse, error) {
-	s.agentMutex.RLock()
-	defer s.agentMutex.RUnlock()
+	// 将 proto 的 Action (0,1) 转换为 simulation 的 AgentAction (0,1)
+	simAction := simulation.AgentAction(req.Action)
 
-	// 使用带锁的 map 来安全地并发写入奖励
-	rewards := make(map[string]float32)
-	var rewardsMutex sync.Mutex
-	var wg sync.WaitGroup
+	// 为唯一的智能体执行 Step
+	reward := s.aircraftAgent.Step(simAction, s.commsSystem)
 
-	// 并发执行所有智能体的 Step 函数
-	for id, action := range req.Actions {
-		if agentInstance, ok := s.agents[id]; ok {
-			wg.Add(1)
-			go func(id string, agentInstance agent, action proto.Action) {
-				defer wg.Done()
-				// [核心修改] 将 proto 的 Action (0,1,2) 直接转换为 simulation 的 AgentAction (0,1,2)
-				simAction := simulation.AgentAction(action)
-				reward := agentInstance.Step(simAction, s.commsSystem)
+	// 获取新状态
+	obs := s.aircraftAgent.GetObservation(s.commsSystem)
 
-				rewardsMutex.Lock()
-				rewards[id] = reward
-				rewardsMutex.Unlock()
-			}(id, agentInstance, action)
-		}
-	}
-	wg.Wait()
-
-	// 收集所有智能体的新状态
-	newStates := make(map[string]*proto.AgentState)
-	// 现在的 isDone 条件是安全的，因为它读取的是在 Reset 中被提前设置好的 simulationRunning 状态
+	// 检查模拟是否已在后台完成
 	isDone := !s.simulationRunning.Load() && s.episodeCounter.Load() > 0
 
-	for id, agentInstance := range s.agents {
-		obs := agentInstance.GetObservation(s.commsSystem)
-		newStates[id] = &proto.AgentState{
-			Observation: mapObservationToProto(obs),
-			Reward:      rewards[id],
-			Done:        isDone,
-		}
+	// 构建响应
+	state := &proto.AgentState{
+		Observation: mapObservationToProto(obs),
+		Reward:      reward,
+		Done:        isDone,
 	}
 
-	return &proto.StepResponse{States: newStates}, nil
+	return &proto.StepResponse{State: state}, nil
 }
 
-// Reset 是 gRPC 的 Reset 方法的实现。
+// [修改后] Reset 是 gRPC Reset 方法的实现，适配单智能体。
 func (s *Server) Reset(ctx context.Context, req *proto.ResetRequest) (*proto.ResetResponse, error) {
-	// 增加 episode 计数
 	currentEpisode := s.episodeCounter.Add(1)
 	log.Printf("🔄 [Episode %d] 收到 Reset 请求，正在重置并启动新一轮模拟...", currentEpisode)
 
-	s.agentMutex.RLock()
-	defer s.agentMutex.RUnlock()
-
-	// 1. 重置所有智能体和信道的统计数据和状态
-	for _, agentInstance := range s.agents {
-		agentInstance.Reset()
-	}
+	// 1. 重置所有模拟组件
+	s.trafficGenerator.Reset() // [新增] 重置背景流量生成器
+	s.aircraftAgent.Reset()
 	s.commsSystem.PrimaryChannel.ResetStats()
 	if s.commsSystem.BackupChannel != nil {
 		s.commsSystem.BackupChannel.ResetStats()
 	}
 
-	// 在启动 goroutine 之前，就将模拟状态设置为 true。
-	// 这就消除了竞态条件，确保任何紧随其后的 Step 请求都能看到正确的 \"正在运行\" 状态。
+	// 2. 将模拟状态设置为 true
 	s.simulationRunning.Store(true)
 
-	// 2. 在后台启动新的飞行计划模拟（消息生成器）
+	// 3. 在后台启动新的飞行计划模拟
 	go func() {
-		// defer 语句确保在 goroutine 结束时（即模拟完成后）执行清理工作
 		defer s.simulationRunning.Store(false)
 		defer s.dataCollector.CollectAndSave(int(currentEpisode))
 
-		// 调用阻塞式的模拟函数。这个函数会运行约68分钟。
+		// 调用阻塞式的模拟函数
 		simulation.RunSimulationSession(s.aircraftList)
 
 		log.Printf("✅ [Episode %d] 飞行计划模拟已在后台完成。", currentEpisode)
 	}()
 
-	// 3. 获取所有智能体的初始状态并立即返回给 Python
-	initialStates := make(map[string]*proto.AgentState)
-	for id, agentInstance := range s.agents {
-		obs := agentInstance.GetObservation(s.commsSystem)
-		initialStates[id] = &proto.AgentState{
-			Observation: mapObservationToProto(obs),
-			Reward:      0.0,
-			Done:        false,
-		}
+	// 4. 获取智能体的初始状态并立即返回
+	obs := s.aircraftAgent.GetObservation(s.commsSystem)
+	initialState := &proto.AgentState{
+		Observation: mapObservationToProto(obs),
+		Reward:      0.0,
+		Done:        false,
 	}
 
-	return &proto.ResetResponse{States: initialStates}, nil
+	return &proto.ResetResponse{State: initialState}, nil
 }
 
-// mapObservationToProto 是一个辅助函数，用于将 Go 的观测结构转换为 Protobuf 结构。
+// mapObservationToProto 辅助函数 (无变化)
 func mapObservationToProto(obs simulation.AgentObservation) *proto.AgentObservation {
 	return &proto.AgentObservation{
 		HasMessage:                obs.HasMessage,

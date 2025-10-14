@@ -15,19 +15,19 @@ import (
 type ackWaiter struct {
 	message     ACARSMessageInterface
 	sendTime    time.Time
-	enqueueTime time.Time // **[保留]** 报文原始入队时间，用于超时重传
+	enqueueTime time.Time // 报文原始入队时间，用于超时重传
 }
 
 // outboxItem 用于在发件箱中存储消息及其元数据
 type outboxItem struct {
 	message          ACARSMessageInterface
 	enqueueTime      time.Time
-	isRetransmission bool // [新增] 标记此条目是否为重传
+	isRetransmission bool // 标记此条目是否为重传
 }
 
 // Aircraft 结构体定义了一架航空器的所有关键参数
 type Aircraft struct {
-	// ... (结构体其他字段保持不变)
+	// ... (结构体字段保持不变)
 	ICAOAddress  string `json:"icaoAddress"`
 	Registration string `json:"registration"`
 	AircraftType string `json:"aircraftType"`
@@ -150,7 +150,7 @@ func (a *Aircraft) StartListening(comms *CommunicationSystem) {
 	}
 }
 
-// GetObservation 为 MARL 代理生成当前的观测数据
+// GetObservation 为 MARL 代理生成当前的观测数据 (无变化)
 func (a *Aircraft) GetObservation(comms *CommunicationSystem) AgentObservation {
 	a.outboundMutex.RLock()
 	queueLen := len(a.outboundQueue)
@@ -167,6 +167,8 @@ func (a *Aircraft) GetObservation(comms *CommunicationSystem) AgentObservation {
 		OutboundQueueLength: int32(queueLen),
 		PendingAcksCount:    pendingAcks,
 	}
+	// 在单信道模式下，comms.BackupChannel 将为 nil，
+	// obs.BackupChannelBusy 将保持其默认值 false，这是正确的。
 	if comms.BackupChannel != nil {
 		obs.BackupChannelBusy = comms.BackupChannel.IsBusy()
 	}
@@ -184,11 +186,11 @@ func (a *Aircraft) GetObservation(comms *CommunicationSystem) AgentObservation {
 	return obs
 }
 
-// Step 函数: 执行一步决策并返回奖励
+// [修改后] Step 函数: 执行一步决策并返回奖励，适配单信道双动作空间
 func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 {
 	reward := float32(0)
 
-	// 1. 处理 ACK 超时和重传
+	// 1. 处理 ACK 超时和重传 (逻辑无变化)
 	var timedOutWaiters []*ackWaiter
 	a.ackWaiters.Range(func(key, value interface{}) bool {
 		waiter := value.(*ackWaiter)
@@ -205,7 +207,7 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 			log.Printf("⏰ [飞机 %s] 等待报文 (ID: %s) 的 ACK 超时！将重新排队...", a.CurrentFlightID, waiter.message.GetBaseMessage().MessageID)
 			atomic.AddUint64(&a.totalRetries, 1)
 
-			reward -= 25.0
+			reward -= 25.0 // 超时重传是一个严重的负面事件
 
 			item := outboxItem{
 				message:          waiter.message,
@@ -223,62 +225,58 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 	// 2. 根据动作执行决策
 	itemToSend := a.peekMessage()
 	if itemToSend == nil {
-		if action == ActionSendPrimary || action == ActionSendBackup {
+		// 如果没有消息要发送
+		if action == ActionSend {
+			// 惩罚在没有消息时尝试发送的动作
 			reward -= 10.0
-		} else {
+		} else { // ActionWait
+			// 奖励在没有消息时正确等待的动作
 			reward += 1.0
 		}
 		return reward
 	}
 
+	// 如果有消息要发送
 	switch action {
 	case ActionWait:
-		if comms.PrimaryChannel.IsBusy() && (comms.BackupChannel == nil || comms.BackupChannel.IsBusy()) {
+		if comms.PrimaryChannel.IsBusy() {
 			// 信道繁忙，等待是合理的，但仍有轻微的时间成本
 			reward -= 0.5
 		} else {
-			// [核心修改] 当信道空闲时，等待的惩罚与队列长度和等待时间挂钩
+			// 信道空闲但智能体选择等待，这是一个负面行为。
+			// 惩罚的力度与消息的等待时间和队列的长度相关。
 			a.outboundMutex.RLock()
 			queueLen := len(a.outboundQueue)
 			a.outboundMutex.RUnlock()
 
 			waitTime := float32(time.Since(itemToSend.enqueueTime).Seconds())
 
-			// 新的惩罚公式: 基础惩罚 + 队列长度惩罚 + 等待时间惩罚
-			// 队列越长，智能体不作为的“机会成本”就越高，惩罚也应越大。
-			// 我们可以为队列中的每条消息设置一个惩罚因子。
 			const queueLengthPenaltyFactor = 5
 			const timePenaltyFactor = 2.0
 
 			penalty := 1.0 + (float32(queueLen) * queueLengthPenaltyFactor) + (waitTime * timePenaltyFactor)
 
 			if itemToSend.isRetransmission {
-				// 对重传消息的延迟给予额外惩罚
+				// 对延迟重传的消息施加额外惩罚
 				penalty += 15.0
 			}
 			reward -= penalty
 		}
-	case ActionSendPrimary:
+	case ActionSend:
+		// 尝试在主信道上发送
 		reward += a.attemptSendOnChannel(itemToSend, comms.PrimaryChannel)
-
-	case ActionSendBackup:
-		if comms.BackupChannel != nil {
-			reward += a.attemptSendOnChannel(itemToSend, comms.BackupChannel)
-		} else {
-			reward -= 15.0
-		}
 	}
 	return reward
 }
 
-// attemptSendOnChannel 尝试在指定信道上发送消息
+// attemptSendOnChannel 尝试在指定信道上发送消息 (无变化)
 func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) float32 {
 	atomic.AddUint64(&a.totalRqTunnel, 1)
 	time.Sleep(time.Duration(10+rand.Intn(41)) * time.Microsecond)
 
 	if channel.IsBusy() {
 		atomic.AddUint64(&a.totalFailRqTunnel, 1)
-		return -2.0
+		return -2.0 // 尝试在繁忙信道发送的惩罚
 	}
 
 	atomic.AddUint64(&a.totalTxAttempts, 1)
@@ -302,7 +300,7 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 		}
 		a.ackWaiters.Store(msg.GetBaseMessage().MessageID, waiter)
 
-		// [核心修改] 使用在 400ms 到 2000ms 之间线性衰减的奖励函数
+		// 基于等待时间的线性衰减奖励函数
 		const maxReward = 20.0
 		const minReward = 0.0
 		const minWaitTime = 0.4 // 400ms
@@ -323,11 +321,11 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 	} else {
 		atomic.AddUint64(&a.totalCollisions, 1)
 		log.Printf("💥 [飞机 %s] 发送报文 (ID: %s) 时失败(碰撞)。", a.CurrentFlightID, msg.GetBaseMessage().MessageID)
-		return -50.0
+		return -50.0 // 碰撞是严重的负面事件
 	}
 }
 
-// Reset 重置飞机状态
+// Reset 重置飞机状态 (无变化)
 func (a *Aircraft) Reset() {
 	atomic.StoreUint64(&a.totalTxAttempts, 0)
 	atomic.StoreUint64(&a.totalCollisions, 0)

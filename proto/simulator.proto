@@ -7,29 +7,19 @@ package proto;
 // Go 的包路径选项
 option go_package = "Air-Simulator/proto";
 
-// 定义智能体可以执行的动作枚举
-// [核心修改] 动作空间现在为3，并从0开始编号
+// [修改后] 定义智能体可以执行的动作枚举，简化为2个动作
 enum Action {
-  ACTION_WAIT = 0;
-  ACTION_SEND_PRIMARY = 1;
-  ACTION_SEND_BACKUP = 2;
+  ACTION_WAIT = 0; // 代表智能体选择等待
+  ACTION_SEND = 1; // 代表智能体尝试在主信道发送消息
 }
 
-// 定义消息优先级枚举
-enum Priority {
-  PRIORITY_UNSPECIFIED = 0;
-  PRIORITY_LOW = 1;
-  PRIORITY_MEDIUM = 2;
-  PRIORITY_HIGH = 3;
-  PRIORITY_CRITICAL = 4;
-}
-
-// 定义单个智能体的观测数据结构
+// 定义单个智能体的观测数据结构 (维持原样)
 // 这将是神经网络的输入
 message AgentObservation {
   bool has_message = 1;
   bool primary_channel_busy = 2;
-  bool backup_channel_busy = 3;
+  // 注意：在单信道模式下，此字段将始终为 false
+  bool backup_channel_busy = 3; 
   int32 pending_acks_count = 4;
   int32 outbound_queue_length = 5;
   float top_message_wait_time_seconds = 6;
@@ -43,33 +33,27 @@ message AgentState {
   bool done = 3; // 标志着一个 episode 是否结束
 }
 
-// 定义 Step 函数的请求体
+// [修改后] 定义 Step 函数的请求体，不再需要 map
 message StepRequest {
-  // key 是智能体的唯一ID (例如 "A70000" 或 "GND_CTL_MAIN")
-  // value 是该智能体要执行的动作
-  map<string, Action> actions = 1;
+  Action action = 1;
 }
 
-// 定义 Step 函数的响应体
+// [修改后] 定义 Step 函数的响应体，不再需要 map
 message StepResponse {
-  // key 是智能体的唯一ID
-  // value 是该智能体执行动作后的新状态和奖励
-  map<string, AgentState> states = 1;
+  AgentState state = 1;
 }
 
 // 定义 Reset 函数的请求体 (通常为空)
 message ResetRequest {}
 
-// 定义 Reset 函数的响应体
+// [修改后] 定义 Reset 函数的响应体，不再需要 map
 message ResetResponse {
-  // key 是智能体的唯一ID
-  // value 是该智能体在环境重置后的初始状态
-  map<string, AgentState> states = 1;
+  AgentState state = 1;
 }
 
 // 定义我们的核心服务：模拟器
 service Simulator {
-  // Step 方法：让所有智能体执行一步动作
+  // Step 方法：让单个智能体执行一步动作
   rpc Step(StepRequest) returns (StepResponse) {}
 
   // Reset 方法：重置整个模拟环境

@@ -5,38 +5,51 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
-	"sort"
-	"sync"
 	"sync/atomic"
 	"time"
 )
 
 // GroundControlCenter 代表一个地面控制站。
 type GroundControlCenter struct {
-	ID            string
-	inboundQueue  chan ACARSMessageInterface
-	outboundQueue []outboxItem // 发送队列
-	outboundMutex sync.RWMutex
-	pendingReward atomic.Int64
+	ID           string
+	inboundQueue chan ACARSMessageInterface // 自己的内部消息队列
+	outbox       chan outboxItem            // 自己的消息发件箱
+	metricsChan  chan<- time.Duration       // 用于发送指标的通道 (只写)
 
 	// --- 通信统计 ---
-	totalTxAttempts   uint64
-	totalCollisions   uint64
-	successfulTx      uint64
-	totalRqTunnel     uint64
-	totalFailRqTunnel uint64
-	totalWaitTimeNs   atomic.Int64
-	waitTimes         []time.Duration
-	waitTimesMutex    sync.Mutex
+	totalTxAttempts      uint64       // 总传输尝试次数 (每次尝试获得信道)
+	totalCollisions      uint64       // 碰撞/信道访问失败次数
+	successfulTx         uint64       // 成功发送并收到ACK的报文总数
+	totalDroppedMessages uint64       // 因超时而被丢弃的ACK消息总数
+	totalRqTunnel        uint64       // 总请求隧道次数
+	totalFailRqTunnel    uint64       // 失败请求隧道次数
+	totalWaitTimeNs      atomic.Int64 // 总等待时间 (纳秒)
 }
 
 // NewGroundControlCenter 是 GroundControlCenter 的构造函数。
 func NewGroundControlCenter(id string) *GroundControlCenter {
 	return &GroundControlCenter{
-		ID:            id,
-		inboundQueue:  make(chan ACARSMessageInterface, 50),
-		outboundQueue: make([]outboxItem, 0, 20),
-		waitTimes:     make([]time.Duration, 0, 100),
+		ID:           id,
+		inboundQueue: make(chan ACARSMessageInterface, 50), // 为其分配一个带缓冲的队列
+		outbox:       make(chan outboxItem, 100),           // 初始化发件箱
+	}
+}
+
+// EnqueueMessage 将消息放入发件箱以供发送
+func (gcc *GroundControlCenter) EnqueueMessage(msg ACARSMessageInterface) {
+	item := outboxItem{
+		message:     msg,
+		enqueueTime: time.Now(),
+	}
+	gcc.outbox <- item
+	log.Printf("📥 [地面站 %s] 新报文 (ID: %s) 已加入发件箱。", gcc.ID, msg.GetBaseMessage().MessageID)
+}
+
+// ProcessOutbox 循环并串行处理发件箱中的消息
+func (gcc *GroundControlCenter) ProcessOutbox(comms *CommunicationSystem) {
+	for item := range gcc.outbox {
+		// 确保一次只发送一封邮件，因此这里是同步调用
+		gcc.SendMessage(item, comms)
 	}
 }
 
@@ -45,24 +58,36 @@ func (gcc *GroundControlCenter) StartListening(commsSystem *CommunicationSystem)
 	commsSystem.RegisterListener(gcc.inboundQueue)
 	log.Printf("🛰️  地面站 [%s] 已启动，开始监听通信系统...", gcc.ID)
 
+	go gcc.ProcessOutbox(commsSystem) // 启动发件箱处理器
+
 	for msg := range gcc.inboundQueue {
-		go gcc.processMessage(msg)
+		go gcc.processMessage(msg, commsSystem)
 	}
 }
 
-// processMessage 处理收到的消息并准备ACK。
-func (gcc *GroundControlCenter) processMessage(msg ACARSMessageInterface) {
+// processMessage 是内部处理方法，处理单个报文并发送 ACK。
+func (gcc *GroundControlCenter) processMessage(msg ACARSMessageInterface, commsSystem *CommunicationSystem) {
 	baseMsg := msg.GetBaseMessage()
+
+	// [新增] 过滤掉来自背景流量生成器的报文
+	if baseMsg.AircraftICAOAddress == BackgroundTrafficICAO {
+		// log.Printf("🗑️ [地面站 %s] 过滤掉来自背景流量的报文 (ID: %s)", gcc.ID, baseMsg.MessageID)
+		return
+	}
+
 	if baseMsg.AircraftICAOAddress == gcc.ID {
 		return
 	}
 
+	// 模拟处理延迟
 	time.Sleep(config.ProcessingDelay)
 
+	log.Printf("✅ [%s] 报文 %s 处理完毕，准备发送高优先级 ACK...", gcc.ID, baseMsg.MessageID)
+
+	// 创建 ACK 报文
 	ackData := AcknowledgementData{
-		OriginMessagePriority: msg.GetPriority(),
-		OriginalMessageID:     baseMsg.MessageID,
-		Status:                "RECEIVED",
+		OriginalMessageID: baseMsg.MessageID,
+		Status:            "RECEIVED",
 	}
 	ackBaseMsg := ACARSBaseMessage{
 		AircraftICAOAddress: gcc.ID,
@@ -81,236 +106,98 @@ func (gcc *GroundControlCenter) processMessage(msg ACARSMessageInterface) {
 	gcc.EnqueueMessage(ackMessage)
 }
 
-// EnqueueMessage 将新消息放入发件箱。
-func (gcc *GroundControlCenter) EnqueueMessage(msg ACARSMessageInterface) {
-	gcc.outboundMutex.Lock()
-	defer gcc.outboundMutex.Unlock()
+// SendMessage 使用 p-坚持 CSMA 算法在选定的信道上发送报文。
+func (gcc *GroundControlCenter) SendMessage(item outboxItem, commsSystem *CommunicationSystem) {
+	msg := item.message
+	enqueueTime := item.enqueueTime
+	baseMsg := msg.GetBaseMessage()
 
-	item := outboxItem{
-		message:          msg,
-		enqueueTime:      time.Now(),
-		isRetransmission: false, // 地面站不重传，此项总为 false
-	}
-	gcc.outboundQueue = append(gcc.outboundQueue, item)
-}
+	targetChannel := commsSystem.SelectChannelForMessage(msg, gcc.ID)
+	p := 0.05
+	timeSlotForChannel := targetChannel.GetCurrentTimeSlot()
 
-// peekMessage 查看（不移除）队列头部的消息。
-func (gcc *GroundControlCenter) peekMessage() *outboxItem {
-	gcc.outboundMutex.RLock()
-	defer gcc.outboundMutex.RUnlock()
-	if len(gcc.outboundQueue) == 0 {
-		return nil
-	}
-	return &gcc.outboundQueue[0]
-}
+	// 地面站目前只发送ACK，所以日志可以保持具体
+	log.Printf("🚀 [%s] 准备发送 ACK (ID: %s, Prio: %s)", gcc.ID, baseMsg.MessageID, msg.GetPriority())
 
-// removeMessageFromQueue 从队列中移除消息。
-func (gcc *GroundControlCenter) removeMessageFromQueue(messageID string) {
-	gcc.outboundMutex.Lock()
-	defer gcc.outboundMutex.Unlock()
-	for i, item := range gcc.outboundQueue {
-		if item.message.GetBaseMessage().MessageID == messageID {
-			gcc.outboundQueue = append(gcc.outboundQueue[:i], gcc.outboundQueue[i+1:]...)
-			return
+	// 地面站将持续尝试发送 ACK 直到成功
+	for {
+		// [核心修改 2] 发送前检查：在每次尝试发送前，都检查ACK是否已“陈旧”。
+		// 如果因为信道持续拥堵，导致这个ACK从入队(enqueueTime)到当前(Now)的等待时间
+		// 已经超过了飞机的超时阈值，就直接放弃发送，以避免浪费资源并处理下一个消息。
+		if time.Since(enqueueTime) > config.AckTimeout {
+			log.Printf("🗑️  [地面站 %s] 放弃发送陈旧的ACK (for msg: %s)，因信道拥堵等待时间过长。", gcc.ID, baseMsg.MessageID)
+			atomic.AddUint64(&gcc.totalDroppedMessages, 1)
+			return // 放弃发送，ProcessOutbox将处理下一个消息
 		}
-	}
-}
 
-// GetObservation 为地面站 MARL 代理生成当前的观测数据。
-func (gcc *GroundControlCenter) GetObservation(comms *CommunicationSystem) AgentObservation {
-	gcc.outboundMutex.RLock()
-	queueLen := len(gcc.outboundQueue)
-	gcc.outboundMutex.RUnlock()
+		atomic.AddUint64(&gcc.totalRqTunnel, 1)
 
-	obs := AgentObservation{
-		PrimaryChannelBusy:  comms.PrimaryChannel.IsBusy(),
-		PendingAcksCount:    0, // 地面站不等待ACK
-		OutboundQueueLength: int32(queueLen),
-	}
-	if comms.BackupChannel != nil {
-		obs.BackupChannelBusy = comms.BackupChannel.IsBusy()
-	}
+		if !targetChannel.IsBusy() {
+			if rand.Float64() < p {
+				atomic.AddUint64(&gcc.totalTxAttempts, 1)
 
-	if topItem := gcc.peekMessage(); topItem != nil {
-		obs.HasMessage = true
-		obs.TopMessageWaitTimeSeconds = float32(time.Since(topItem.enqueueTime).Seconds())
-		obs.IsRetransmission = topItem.isRetransmission
-	} else {
-		obs.HasMessage = false
-		obs.TopMessageWaitTimeSeconds = 0
-		obs.IsRetransmission = false
-	}
+				if targetChannel.AttemptTransmit(msg, gcc.ID, config.TransmissionTime) {
+					waitTime := time.Since(enqueueTime)
+					gcc.totalWaitTimeNs.Add(waitTime.Nanoseconds())
+					atomic.AddUint64(&gcc.successfulTx, 1)
 
-	return obs
-}
+					if gcc.metricsChan != nil {
+						select {
+						case gcc.metricsChan <- waitTime:
+						default:
+							log.Printf("⚠️ [地面站 %s] 指标通道已满，本次耗时 %v 未能记录", gcc.ID, waitTime)
+						}
+					}
 
-// Step 是地面站 MARL 模式下的核心执行函数。
-func (gcc *GroundControlCenter) Step(action AgentAction, comms *CommunicationSystem) float32 {
-	reward := float32(0.0)
-
-	// 1. 清理过期的 ACK 报文
-	gcc.outboundMutex.Lock()
-	i := 0
-	for i < len(gcc.outboundQueue) {
-		item := gcc.outboundQueue[i]
-		if time.Since(item.enqueueTime) > config.AckTimeout {
-			log.Printf("🗑️ [地面站 %s] 丢弃过期ACK (ID: %s)，因其已在队列中停留过久。", gcc.ID, item.message.GetBaseMessage().MessageID)
-			reward -= 25.0
-			gcc.outboundQueue = append(gcc.outboundQueue[:i], gcc.outboundQueue[i+1:]...)
+					log.Printf("✅ [%s] 在信道 [%s] 上成功发送 ACK (ID: %s), 耗时: %v", gcc.ID, targetChannel.ID, baseMsg.MessageID, waitTime)
+					return // 成功发送后退出函数
+				} else {
+					atomic.AddUint64(&gcc.totalCollisions, 1)
+					log.Printf("💥 [%s] 在信道 [%s] 上发送 ACK 时发生碰撞！", gcc.ID, targetChannel.ID)
+				}
+			} else {
+				log.Printf("🤔 [%s] 信道 [%s] 空闲，但决定延迟发送 ACK (p=%.2f)...", gcc.ID, targetChannel.ID, p)
+			}
 		} else {
-			i++
-		}
-	}
-	// 按入队时间排序，确保 FIFO
-	sort.Slice(gcc.outboundQueue, func(i, j int) bool {
-		return gcc.outboundQueue[i].enqueueTime.Before(gcc.outboundQueue[j].enqueueTime)
-	})
-	gcc.outboundMutex.Unlock()
-
-	// 2. 根据动作执行决策
-	itemToSend := gcc.peekMessage()
-	if itemToSend == nil {
-		if action == ActionSendPrimary || action == ActionSendBackup {
-			reward -= 10.0
-		} else {
-			reward += 1.0
-		}
-		return reward
-	}
-
-	switch action {
-	case ActionWait:
-		if comms.PrimaryChannel.IsBusy() && (comms.BackupChannel == nil || comms.BackupChannel.IsBusy()) {
-			// If all channels are busy, waiting is a reasonable action, apply a small penalty for time cost.
-			reward -= 0.5
-		} else {
-			// If channels are free, penalize waiting based on queue length and wait time.
-			gcc.outboundMutex.RLock()
-			queueLen := len(gcc.outboundQueue)
-			gcc.outboundMutex.RUnlock()
-
-			waitTime := float32(time.Since(itemToSend.enqueueTime).Seconds())
-
-			// Consistent penalty formula with aircraft.go
-			const queueLengthPenaltyFactor = 10
-			const timePenaltyFactor = 2.0
-
-			penalty := (float32(queueLen) * queueLengthPenaltyFactor) + (waitTime * timePenaltyFactor)
-			reward -= penalty
+			atomic.AddUint64(&gcc.totalFailRqTunnel, 1)
+			log.Printf("⏳ [%s] 发现信道 [%s] 忙，等待发送 ACK...", gcc.ID, targetChannel.ID)
 		}
 
-	case ActionSendPrimary:
-		reward += gcc.attemptSendOnChannel(itemToSend, comms.PrimaryChannel)
-	case ActionSendBackup:
-		if comms.BackupChannel != nil {
-			reward += gcc.attemptSendOnChannel(itemToSend, comms.BackupChannel)
-		} else {
-			reward -= 15.0
-		}
-	}
-
-	return reward
-}
-
-// attemptSendOnChannel 尝试在指定信道上发送消息
-func (gcc *GroundControlCenter) attemptSendOnChannel(item *outboxItem, channel *Channel) float32 {
-	atomic.AddUint64(&gcc.totalRqTunnel, 1)
-	time.Sleep(time.Duration(10+rand.Intn(41)) * time.Microsecond)
-
-	if channel.IsBusy() {
-		atomic.AddUint64(&gcc.totalFailRqTunnel, 1)
-		return -1.0
-	}
-
-	atomic.AddUint64(&gcc.totalTxAttempts, 1)
-
-	if channel.AttemptTransmit(item.message, gcc.ID, config.TransmissionTime) {
-		waitTime := time.Since(item.enqueueTime)
-		gcc.totalWaitTimeNs.Add(waitTime.Nanoseconds())
-
-		gcc.waitTimesMutex.Lock()
-		gcc.waitTimes = append(gcc.waitTimes, waitTime)
-		gcc.waitTimesMutex.Unlock()
-
-		gcc.removeMessageFromQueue(item.message.GetBaseMessage().MessageID)
-		atomic.AddUint64(&gcc.successfulTx, 1)
-		log.Printf("✅ [地面站 %s] 成功抢占信道并发送 ACK (ID: %s)。排队等待时间: %s", gcc.ID, item.message.GetBaseMessage().MessageID, waitTime)
-
-		// [核心修改] 使用在 400ms 到 2000ms 之间线性衰减的奖励函数
-		const maxReward = 20.0
-		const minReward = 0.0
-		const minWaitTime = 0.4 // 400ms
-		const maxWaitTime = 2.0 // 2000ms
-
-		waitTimeSeconds := waitTime.Seconds()
-		var reward float32
-
-		if waitTimeSeconds <= minWaitTime {
-			reward = maxReward
-		} else if waitTimeSeconds >= maxWaitTime {
-			reward = minReward
-		} else {
-			// 线性衰减
-			reward = maxReward - float32((waitTimeSeconds-minWaitTime)*(maxReward-minReward)/(maxWaitTime-minWaitTime))
-		}
-		return max(reward, float32(1.0))
-	} else {
-		atomic.AddUint64(&gcc.totalCollisions, 1)
-		log.Printf("💥 [地面站 %s] 发送 ACK (ID: %s) 时失败(碰撞)。", gcc.ID, item.message.GetBaseMessage().MessageID)
-		return -50.0
+		time.Sleep(timeSlotForChannel)
 	}
 }
 
-// Reset 重置所有统计计数器。
-func (gcc *GroundControlCenter) Reset() {
+// ResetStats 重置所有统计计数器。
+func (gcc *GroundControlCenter) ResetStats() {
 	atomic.StoreUint64(&gcc.totalTxAttempts, 0)
 	atomic.StoreUint64(&gcc.totalCollisions, 0)
 	atomic.StoreUint64(&gcc.successfulTx, 0)
+	atomic.StoreUint64(&gcc.totalDroppedMessages, 0)
 	atomic.StoreUint64(&gcc.totalRqTunnel, 0)
 	atomic.StoreUint64(&gcc.totalFailRqTunnel, 0)
 	gcc.totalWaitTimeNs.Store(0)
-
-	gcc.waitTimesMutex.Lock()
-	gcc.waitTimes = make([]time.Duration, 0, 100)
-	gcc.waitTimesMutex.Unlock()
-
-	gcc.outboundMutex.Lock()
-	gcc.outboundQueue = make([]outboxItem, 0, 20)
-	gcc.outboundMutex.Unlock()
-}
-
-// GetWaitTimes 返回一个线程安全的等待时间副本
-func (gcc *GroundControlCenter) GetWaitTimes() []time.Duration {
-	gcc.waitTimesMutex.Lock()
-	defer gcc.waitTimesMutex.Unlock()
-	timesCopy := make([]time.Duration, len(gcc.waitTimes))
-	copy(timesCopy, gcc.waitTimes)
-	return timesCopy
 }
 
 // GroundControlRawStats 定义了用于数据收集的原始统计数据结构。
 type GroundControlRawStats struct {
-	SuccessfulTx      uint64
-	TotalTxAttempts   uint64
-	TotalCollisions   uint64
-	TotalRqTunnel     uint64
-	TotalFailRqTunnel uint64
-	TotalWaitTime     time.Duration
-	UnsentMessages    int
+	SuccessfulTx         uint64
+	TotalTxAttempts      uint64
+	TotalCollisions      uint64
+	TotalDroppedMessages uint64
+	TotalRqTunnel        uint64
+	TotalFailRqTunnel    uint64
+	TotalWaitTimeNs      time.Duration
 }
 
 // GetRawStats 返回原始统计数据，用于写入报告。
 func (gcc *GroundControlCenter) GetRawStats() GroundControlRawStats {
-	gcc.outboundMutex.RLock()
-	unsentMessage := len(gcc.outboundQueue)
-	gcc.outboundMutex.RUnlock()
 	return GroundControlRawStats{
-		SuccessfulTx:      atomic.LoadUint64(&gcc.successfulTx),
-		TotalTxAttempts:   atomic.LoadUint64(&gcc.totalTxAttempts),
-		TotalCollisions:   atomic.LoadUint64(&gcc.totalCollisions),
-		TotalRqTunnel:     atomic.LoadUint64(&gcc.totalRqTunnel),
-		TotalFailRqTunnel: atomic.LoadUint64(&gcc.totalFailRqTunnel),
-		TotalWaitTime:     time.Duration(gcc.totalWaitTimeNs.Load()),
-		UnsentMessages:    unsentMessage,
+		SuccessfulTx:         atomic.LoadUint64(&gcc.successfulTx),
+		TotalTxAttempts:      atomic.LoadUint64(&gcc.totalTxAttempts),
+		TotalCollisions:      atomic.LoadUint64(&gcc.totalCollisions),
+		TotalDroppedMessages: atomic.LoadUint64(&gcc.totalDroppedMessages),
+		TotalRqTunnel:        atomic.LoadUint64(&gcc.totalRqTunnel),
+		TotalFailRqTunnel:    atomic.LoadUint64(&gcc.totalFailRqTunnel),
+		TotalWaitTimeNs:      time.Duration(gcc.totalWaitTimeNs.Load()),
 	}
 }

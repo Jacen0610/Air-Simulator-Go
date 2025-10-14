@@ -8,6 +8,7 @@ package proto
 
 import (
 	context "context"
+
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
@@ -22,7 +23,7 @@ const _ = grpc.SupportPackageIsVersion7
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type SimulatorClient interface {
-	// Step 方法：让所有智能体执行一步动作
+	// Step 方法：让单个智能体执行一步动作
 	Step(ctx context.Context, in *StepRequest, opts ...grpc.CallOption) (*StepResponse, error)
 	// Reset 方法：重置整个模拟环境
 	Reset(ctx context.Context, in *ResetRequest, opts ...grpc.CallOption) (*ResetResponse, error)
@@ -58,7 +59,7 @@ func (c *simulatorClient) Reset(ctx context.Context, in *ResetRequest, opts ...g
 // All implementations must embed UnimplementedSimulatorServer
 // for forward compatibility
 type SimulatorServer interface {
-	// Step 方法：让所有智能体执行一步动作
+	// Step 方法：让单个智能体执行一步动作
 	Step(context.Context, *StepRequest) (*StepResponse, error)
 	// Reset 方法：重置整个模拟环境
 	Reset(context.Context, *ResetRequest) (*ResetResponse, error)

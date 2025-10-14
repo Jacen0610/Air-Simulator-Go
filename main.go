@@ -38,7 +38,8 @@ func main() {
 
 	// --- 2. 创建地面站和飞机 ---
 	groundControl := simulation.NewGroundControlCenter("GND_CTL_MAIN")
-	go groundControl.StartListening(commsSystem)
+	go groundControl.StartListening(commsSystem) // 地面站现在自主运行
+	// groundControl.StartSending(commsSystem) // StartListening 内部会启动 StartSending
 
 	aircraftList := make([]*simulation.Aircraft, simulation.AircraftCount)
 	for i := 0; i < simulation.AircraftCount; i++ {
@@ -51,7 +52,12 @@ func main() {
 	}
 	log.Printf("✈️  已成功创建 %d 架飞机.", len(aircraftList))
 
-	// --- 3. 创建数据收集器实例 ---
+	// --- 3. 创建背景流量生成器 ---
+	trafficGenerator := simulation.NewTrafficGenerator(commsSystem)
+	trafficGenerator.Start() // 启动流量生成器
+	log.Printf("🚦 背景流量生成器已启动。")
+
+	// --- 4. 创建数据收集器实例 ---
 	channelsToMonitor := []*simulation.Channel{primaryChannel}
 	if config.EnableBackupChannel {
 		channelsToMonitor = append(channelsToMonitor, backupChannel)
@@ -60,7 +66,7 @@ func main() {
 	dataCollector := collector.NewDataCollector(aircraftList, channelsToMonitor, groundStationsToMonitor)
 	log.Println("📊 数据收集器已准备就绪。")
 
-	// --- 4. 启动 gRPC 服务器并阻塞主线程，使其永不退出 ---
+	// --- 5. 启动 gRPC 服务器并阻塞主线程，使其永不退出 ---
 	lis, err := net.Listen("tcp", ":50051") // 监听 50051 端口
 	if err != nil {
 		log.Fatalf("❌ 无法监听端口: %v", err)
@@ -69,8 +75,8 @@ func main() {
 
 	grpcServer := grpc.NewServer()
 
-	// 创建 API 服务器实例，并传入所有需要的模拟组件
-	apiServer := api.NewServer(commsSystem, aircraftList, []*simulation.GroundControlCenter{groundControl}, dataCollector)
+	// 创建 API 服务器实例，并传入所有需要的模拟组件，包括流量生成器
+	apiServer := api.NewServer(commsSystem, aircraftList, dataCollector, trafficGenerator)
 
 	// 注册服务
 	proto.RegisterSimulatorServer(grpcServer, apiServer)
@@ -81,4 +87,6 @@ func main() {
 	}
 
 	// 程序现在会一直运行在这里，直到你手动停止它 (e.g., Ctrl+C)
+	// 注意：由于 grpcServer.Serve 会阻塞，trafficGenerator.Stop() 不会被直接调用。
+	// 在实际应用中，可能需要一个更优雅的关闭机制，例如监听 OS 信号。
 }
