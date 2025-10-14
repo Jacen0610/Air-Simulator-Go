@@ -114,7 +114,7 @@ func (c *Channel) AttemptTransmit(msg ACARSMessageInterface, senderID string, tr
 	c.lastBusyTimestamp = time.Now()
 	c.stateMutex.Unlock()
 
-	log.Printf("➡️  [%s] 发现信道 %s 空闲，开始传输 (报文ID: %s, 传输ID: %d)，将阻塞 %v。", senderID, c.ID, msg.GetBaseMessage().MessageID, myID, transmissionTime)
+	// log.Printf("➡️  [%s] 发现信道 %s 空闲，开始传输 (报文ID: %s, 传输ID: %d)，将阻塞 %v。", senderID, c.ID, msg.GetBaseMessage().MessageID, myID, transmissionTime)
 
 	// **[修改]** 同步阻塞，模拟传输过程。
 	time.Sleep(transmissionTime)

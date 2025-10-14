@@ -209,7 +209,7 @@ func (g *TrafficGenerator) attemptSendCSMA() {
 
 		transmitted := g.commsSystem.PrimaryChannel.AttemptTransmit(msg, g.ID, 200*time.Millisecond) // 假设背景消息较短
 		if transmitted {
-			log.Printf("✅ [流量生成器 %s] 成功发送背景消息 (ID: %s)。", g.ID, msg.GetBaseMessage().MessageID)
+			//log.Printf("✅ [流量生成器 %s] 成功发送背景消息 (ID: %s)。", g.ID, msg.GetBaseMessage().MessageID)
 		}
 		g.messageQueue = g.messageQueue[1:]
 	} else {
