@@ -1,7 +1,6 @@
 package simulation
 
 import (
-	"Air-Simulator/config"
 	"fmt"
 	"log"
 	"math/rand"
@@ -29,15 +28,20 @@ type TrafficGenerator struct {
 	modeMutex   sync.RWMutex
 	stopChan    chan struct{}
 	wg          sync.WaitGroup
+
+	// [新增] 内部消息队列，用于存储待发送的背景消息
+	messageQueue []ACARSMessageInterface
+	queueMutex   sync.Mutex
 }
 
 // NewTrafficGenerator 创建一个新的背景流量生成器实例
 func NewTrafficGenerator(commsSystem *CommunicationSystem) *TrafficGenerator {
 	return &TrafficGenerator{
-		ID:          BackgroundTrafficICAO, // 使用固定的 ICAO 地址
-		commsSystem: commsSystem,
-		currentMode: ModeStable, // 初始模式为平稳期
-		stopChan:    make(chan struct{}),
+		ID:           BackgroundTrafficICAO, // 使用固定的 ICAO 地址
+		commsSystem:  commsSystem,
+		currentMode:  ModeStable, // 初始模式为平稳期
+		stopChan:     make(chan struct{}),
+		messageQueue: make([]ACARSMessageInterface, 0, 10),
 	}
 }
 
@@ -49,13 +53,17 @@ func (g *TrafficGenerator) Start() {
 		log.Printf("🚦 [流量生成器 %s] 已启动。", g.ID)
 
 		// 模式切换的计时器
-		modeTicker := time.NewTicker(5 * time.Minute) // 每2分钟切换一次模式
+		modeTicker := time.NewTicker(4 * time.Minute) // 每2分钟切换一次模式
 		defer modeTicker.Stop()
 
-		// 消息生成的计时器
-		var msgTicker *time.Ticker
-		g.setTickerForCurrentMode(&msgTicker)
-		defer msgTicker.Stop()
+		// 消息生成计时器 (用于将消息放入内部队列)
+		var msgGenTicker *time.Ticker
+		g.setTickerForCurrentMode(&msgGenTicker)
+		defer msgGenTicker.Stop()
+
+		// 消息发送计时器 (用于驱动 CSMA 尝试发送)
+		csmaTicker := time.NewTicker(g.commsSystem.PrimaryChannel.GetCurrentTimeSlot()) // 使用信道时隙作为CSMA的步进
+		defer csmaTicker.Stop()
 
 		for {
 			select {
@@ -67,11 +75,21 @@ func (g *TrafficGenerator) Start() {
 				// 切换到下一个模式
 				g.switchToNextMode()
 				// 根据新模式重置消息生成计时器
-				g.setTickerForCurrentMode(&msgTicker)
+				g.setTickerForCurrentMode(&msgGenTicker)
 
-			case <-msgTicker.C:
-				// 生成并尝试发送一条背景消息
-				g.generateAndSendMessage()
+			case <-msgGenTicker.C:
+				// 生成一条新消息并放入内部队列
+				newMessage := g.generateBackgroundMessage()
+				if newMessage != nil {
+					g.queueMutex.Lock()
+					g.messageQueue = append(g.messageQueue, newMessage)
+					g.queueMutex.Unlock()
+					//log.Printf("📥 [流量生成器 %s] 新背景消息 (ID: %s) 已入队。", g.ID, newMessage.GetBaseMessage().MessageID)
+				}
+
+			case <-csmaTicker.C:
+				// 驱动 P-坚持 CSMA 逻辑
+				g.attemptSendCSMA()
 			}
 		}
 	}()
@@ -92,6 +110,11 @@ func (g *TrafficGenerator) Reset() {
 	g.modeMutex.Lock()
 	g.currentMode = ModeStable // 总是从平稳期开始
 	g.modeMutex.Unlock()
+
+	g.queueMutex.Lock()
+	g.messageQueue = make([]ACARSMessageInterface, 0, 10) // 清空消息队列
+	g.queueMutex.Unlock()
+
 	g.Start()
 }
 
@@ -109,7 +132,7 @@ func (g *TrafficGenerator) setTickerForCurrentMode(ticker **time.Ticker) {
 
 	switch g.currentMode {
 	case ModePeak:
-		baseInterval = 600 * time.Millisecond
+		baseInterval = 800 * time.Millisecond
 		jitterRange = 200 * time.Millisecond // 消息间隔将在 200ms 到 300ms 之间随机
 	case ModeStable:
 		baseInterval = 2000 * time.Millisecond
@@ -142,31 +165,55 @@ func (g *TrafficGenerator) switchToNextMode() {
 	}
 }
 
-// generateAndSendMessage 生成一条随机消息并尝试直接在信道上发送 (已修改，固定 ICAO 和优先级)
-func (g *TrafficGenerator) generateAndSendMessage() {
-
-	var msg ACARSMessageInterface
-	var err error
-
-	// [修改] 固定 ICAO 地址和优先级
+// generateBackgroundMessage 生成一条背景消息并返回 (不再尝试发送)
+func (g *TrafficGenerator) generateBackgroundMessage() ACARSMessageInterface {
 	baseMsg := ACARSBaseMessage{
 		AircraftICAOAddress: BackgroundTrafficICAO, // 固定背景流量的 ICAO
 		MessageID:           fmt.Sprintf("BG_MSG_%d", time.Now().UnixNano()),
 		Timestamp:           time.Now(),
 	}
 
-	// [修改] 所有背景消息都使用 MediumPriority
-	msg, err = NewMediumPriorityMessage(baseMsg, "Background traffic message")
-
+	// 所有背景消息都使用 MediumPriority
+	msg, err := NewMediumPriorityMessage(baseMsg, "Background traffic message")
 	if err != nil {
 		log.Printf("错误: [流量生成器 %s] 创建背景消息失败: %v", g.ID, err)
-		return
+		return nil
+	}
+	return msg
+}
+
+// attemptSendCSMA 尝试使用 P-坚持 CSMA 算法发送队列中的第一条消息
+func (g *TrafficGenerator) attemptSendCSMA() {
+	g.queueMutex.Lock()
+	defer g.queueMutex.Unlock()
+
+	if len(g.messageQueue) == 0 {
+		return // 队列为空，无需发送
 	}
 
-	// 直接尝试在主信道上传输，模拟其他实体抢占信道的行为
-	// 这会与飞机和地面站产生碰撞
-	transmitted := g.commsSystem.PrimaryChannel.AttemptTransmit(msg, g.ID, config.TransmissionTime) // 假设背景消息较短
-	if !transmitted {
-		log.Printf("🚦 [流量生成器 %s] 尝试发送消息失败（信道忙或碰撞）。", g.ID)
+	msg := g.messageQueue[0] // 获取队列头部的消息
+
+	// P-persistence 参数
+	p := 0.05 // 可以根据需要调整，这里设置为0.5
+
+	// 1. 载波侦听
+	if g.commsSystem.PrimaryChannel.IsBusy() {
+		// log.Printf("🚦 [流量生成器 %s] 信道忙，延迟发送背景消息 (ID: %s)。", g.ID, msg.GetBaseMessage().MessageID)
+		return // 信道忙，等待下一个时隙再尝试
+	}
+
+	// 2. 信道空闲，以概率 p 尝试发送
+	if rand.Float64() < p {
+		// 模拟发送前的随机延迟，作为CSMA的一部分
+		time.Sleep(time.Duration(10+rand.Intn(41)) * time.Microsecond)
+
+		transmitted := g.commsSystem.PrimaryChannel.AttemptTransmit(msg, g.ID, 200*time.Millisecond) // 假设背景消息较短
+		if transmitted {
+			log.Printf("✅ [流量生成器 %s] 成功发送背景消息 (ID: %s)。", g.ID, msg.GetBaseMessage().MessageID)
+		}
+		g.messageQueue = g.messageQueue[1:]
+	} else {
+		// 以 1-p 的概率决定延迟一个时隙
+		// log.Printf("🤔 [流量生成器 %s] 信道空闲，但决定延迟发送背景消息 (ID: %s)。", g.ID, msg.GetBaseMessage().MessageID)
 	}
 }
