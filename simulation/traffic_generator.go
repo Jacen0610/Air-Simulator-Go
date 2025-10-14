@@ -1,6 +1,7 @@
 package simulation
 
 import (
+	"Air-Simulator/config"
 	"fmt"
 	"log"
 	"math/rand"
@@ -164,7 +165,7 @@ func (g *TrafficGenerator) generateAndSendMessage() {
 
 	// 直接尝试在主信道上传输，模拟其他实体抢占信道的行为
 	// 这会与飞机和地面站产生碰撞
-	transmitted := g.commsSystem.PrimaryChannel.AttemptTransmit(msg, g.ID, 200*time.Millisecond) // 假设背景消息较短
+	transmitted := g.commsSystem.PrimaryChannel.AttemptTransmit(msg, g.ID, config.TransmissionTime) // 假设背景消息较短
 	if !transmitted {
 		log.Printf("🚦 [流量生成器 %s] 尝试发送消息失败（信道忙或碰撞）。", g.ID)
 	}
