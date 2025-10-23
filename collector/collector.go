@@ -132,25 +132,25 @@ func (dc *DataCollector) recordAllStats(f *excelize.File, aircraftSheet, channel
 	}
 
 	// 记录地面站数据
-	for i, gcc := range dc.groundStations {
-		stats := gcc.GetRawStats()
-		var collisionRate, rqFailRate float64
-		if stats.TotalTxAttempts > 0 {
-			collisionRate = (float64(stats.TotalCollisions) / float64(stats.TotalTxAttempts)) * 100
-		}
-		if stats.TotalRqTunnel > 0 {
-			rqFailRate = (float64(stats.TotalFailRqTunnel) / float64(stats.TotalRqTunnel)) * 100
-		}
-		var avgWaitTimeMs float64
-		if stats.SuccessfulTx > 0 {
-			avgWaitTimeMs = float64(stats.TotalWaitTimeNs.Milliseconds()) / float64(stats.SuccessfulTx)
-		}
-		rowData := []interface{}{
-			gcc.ID, stats.SuccessfulTx, stats.TotalTxAttempts, stats.TotalCollisions, collisionRate,
-			avgWaitTimeMs, stats.TotalRqTunnel, stats.TotalFailRqTunnel, rqFailRate,
-		}
-		_ = f.SetSheetRow(groundSheet, fmt.Sprintf("A%d", i+2), &rowData)
-	}
+	//for i, gcc := range dc.groundStations {
+	//	stats := gcc.GetRawStats()
+	//	var collisionRate, rqFailRate float64
+	//	if stats.TotalTxAttempts > 0 {
+	//		collisionRate = (float64(stats.TotalCollisions) / float64(stats.TotalTxAttempts)) * 100
+	//	}
+	//	if stats.TotalRqTunnel > 0 {
+	//		rqFailRate = (float64(stats.TotalFailRqTunnel) / float64(stats.TotalRqTunnel)) * 100
+	//	}
+	//	var avgWaitTimeMs float64
+	//	if stats.SuccessfulTx > 0 {
+	//		avgWaitTimeMs = float64(stats.TotalWaitTimeNs.Milliseconds()) / float64(stats.SuccessfulTx)
+	//	}
+	//	rowData := []interface{}{
+	//		gcc.ID, stats.SuccessfulTx, stats.TotalTxAttempts, stats.TotalCollisions, collisionRate,
+	//		avgWaitTimeMs, stats.TotalRqTunnel, stats.TotalFailRqTunnel, rqFailRate,
+	//	}
+	//	_ = f.SetSheetRow(groundSheet, fmt.Sprintf("A%d", i+2), &rowData)
+	//}
 }
 
 // recordWaitTimeDistribution 收集所有飞机和地面站的等待时间并写入专用工作表
