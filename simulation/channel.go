@@ -50,6 +50,18 @@ func NewChannel(id string, initialPMap map[config.Priority]float64, initialTimeS
 	}
 }
 
+// [新增] ForceTransmit 强制发送高优先级消息，绕过CSMA竞争
+// 主要用于ACK等关键控制信令，以防止饿死。
+func (c *Channel) ForceTransmit(msg ACARSMessageInterface, senderID string) {
+	select {
+	case c.messageQueue <- msg:
+		log.Printf("✅ [%s] 通过优先信道强制发送报文 (ID: %s)。", senderID, msg.GetBaseMessage().MessageID)
+		c.totalMessagesTransmitted.Add(1) // 同样计入总数
+	default:
+		log.Printf("⚠️ [%s] 强制发送失败，信道消息队列已满！", senderID)
+	}
+}
+
 func (c *Channel) UpdatePValues(newPMap map[config.Priority]float64) {
 	c.pValuesMutex.Lock()
 	defer c.pValuesMutex.Unlock()
