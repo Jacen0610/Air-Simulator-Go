@@ -4,6 +4,7 @@ import (
 	"Air-Simulator/config"
 	"encoding/json"
 	"log"
+	"math"
 	"math/rand"
 	"sort"
 	"sync"
@@ -300,24 +301,25 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 		}
 		a.ackWaiters.Store(msg.GetBaseMessage().MessageID, waiter)
 
-		// 基于等待时间的线性衰减奖励函数
-		const maxReward = 20.0
-		const minReward = 0.0
-		const minWaitTime = 0.4 // 400ms
-		const maxWaitTime = 2.0 // 2000ms
+		// --- [新的分段指数衰减奖励函数] ---
+		const maxReward = 25.0  // 成功发送的最高奖励
+		const decayRate = 5.0   // 衰减率：这个值越大，奖励随时间下降得越快
+		const optimalTime = 0.4 // 400ms 的理论最优时间 (秒)
 
 		waitTimeSeconds := waitTime.Seconds()
 		var reward float32
 
-		if waitTimeSeconds <= minWaitTime {
+		if waitTimeSeconds <= optimalTime {
+			// 如果延时在理论最优时间内，给予满分奖励
 			reward = maxReward
-		} else if waitTimeSeconds >= maxWaitTime {
-			reward = minReward
 		} else {
-			// 线性衰减
-			reward = maxReward - float32((waitTimeSeconds-minWaitTime)*(maxReward-minReward)/(maxWaitTime-minWaitTime))
+			// 如果延时超过理论最优时间，对超出部分进行指数惩罚
+			timeOverOptimal := waitTimeSeconds - optimalTime
+			reward = float32(maxReward * math.Exp(-decayRate*timeOverOptimal))
 		}
-		return max(reward, float32(1.0))
+
+		// 确保即使延时很长，成功发送也能获得一个微小的正奖励，以区别于碰撞
+		return max(reward, 1.0)
 	} else {
 		atomic.AddUint64(&a.totalCollisions, 1)
 		log.Printf("💥 [飞机 %s] 发送报文 (ID: %s) 时失败(碰撞)。", a.CurrentFlightID, msg.GetBaseMessage().MessageID)
