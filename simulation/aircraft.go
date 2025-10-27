@@ -207,9 +207,7 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 			a.ackWaiters.Delete(waiter.message.GetBaseMessage().MessageID)
 			log.Printf("⏰ [飞机 %s] 等待报文 (ID: %s) 的 ACK 超时！将重新排队...", a.CurrentFlightID, waiter.message.GetBaseMessage().MessageID)
 			atomic.AddUint64(&a.totalRetries, 1)
-
 			reward -= 25.0 // 超时重传是一个严重的负面事件
-
 			item := outboxItem{
 				message:          waiter.message,
 				enqueueTime:      time.Now(),
@@ -228,11 +226,9 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 	if itemToSend == nil {
 		// 如果没有消息要发送
 		if action == ActionSend {
-			// 惩罚在没有消息时尝试发送的动作
-			reward -= 10.0
+			reward -= 10.0 // 惩罚在没有消息时尝试发送的动作
 		} else { // ActionWait
-			// 奖励在没有消息时正确等待的动作
-			reward += 1.0
+			reward += 1.0 // 奖励在没有消息时正确等待的动作
 		}
 		return reward
 	}
@@ -244,22 +240,22 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 			// 信道繁忙，等待是合理的，但仍有轻微的时间成本
 			reward -= 0.5
 		} else {
-			// 信道空闲但智能体选择等待，这是一个负面行为。
-			// 惩罚的力度与消息的等待时间和队列的长度相关。
+			// [核心修改] 信道空闲但智能体选择等待，这是一个非常糟糕的决策，必须重罚！
+			const basePenaltyForIdleWait = 20.0 // 引入一个巨大的基础惩罚
+			const queueLengthPenaltyFactor = 5.0
+			const timePenaltyFactor = 2.0
+
 			a.outboundMutex.RLock()
 			queueLen := len(a.outboundQueue)
 			a.outboundMutex.RUnlock()
 
 			waitTime := float32(time.Since(itemToSend.enqueueTime).Seconds())
 
-			const queueLengthPenaltyFactor = 5
-			const timePenaltyFactor = 2.0
-
-			penalty := 1.0 + (float32(queueLen) * queueLengthPenaltyFactor) + (waitTime * timePenaltyFactor)
+			// 新的惩罚公式
+			penalty := basePenaltyForIdleWait + (float32(queueLen) * queueLengthPenaltyFactor) + (waitTime * timePenaltyFactor)
 
 			if itemToSend.isRetransmission {
-				// 对延迟重传的消息施加额外惩罚
-				penalty += 15.0
+				penalty += 15.0 // 对延迟重传的消息施加额外惩罚
 			}
 			reward -= penalty
 		}
