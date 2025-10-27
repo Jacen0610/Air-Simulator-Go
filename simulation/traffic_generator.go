@@ -1,6 +1,7 @@
 package simulation
 
 import (
+	"Air-Simulator/config"
 	"fmt"
 	"log"
 	"math/rand"
@@ -119,13 +120,13 @@ func (g *TrafficGenerator) setTickerForCurrentMode(ticker **time.Ticker) {
 
 	switch g.currentMode {
 	case ModeBurst: // [新] 突发模式，流量极度密集
-		baseInterval = 40 * time.Millisecond
+		baseInterval = 40 * time.Millisecond * config.BaseIntervalMultiple
 		jitterRange = 30 * time.Millisecond // 间隔在 40ms ~ 70ms
 	case ModePeak: // 高峰期，非常密集
-		baseInterval = 150 * time.Millisecond
+		baseInterval = 150 * time.Millisecond * config.BaseIntervalMultiple
 		jitterRange = 100 * time.Millisecond // 间隔在 150ms ~ 250ms
 	case ModeStable: // 平稳期，中等密度
-		baseInterval = 600 * time.Millisecond
+		baseInterval = 600 * time.Millisecond * config.BaseIntervalMultiple
 		jitterRange = 400 * time.Millisecond // 间隔在 600ms ~ 1000ms
 	case ModeLow: // 低谷期，非常稀疏
 		baseInterval = 3 * time.Second

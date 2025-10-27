@@ -113,3 +113,7 @@ const (
 	// WeatherReportInterval 定义了气象数据报告的发送间隔。
 	WeatherReportInterval = 4 * time.Minute
 )
+
+const (
+	BaseIntervalMultiple = 10
+)
