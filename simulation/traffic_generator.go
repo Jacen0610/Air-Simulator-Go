@@ -192,7 +192,6 @@ func (g *TrafficGenerator) attemptSendCSMA() {
 		time.Sleep(time.Duration(10+rand.Intn(41)) * time.Microsecond)
 		transmitted := g.commsSystem.PrimaryChannel.AttemptTransmit(msg, g.ID, 200*time.Millisecond)
 		if transmitted {
-			log.Printf("✅ [流量生成器 %s] 成功发送背景消息 (ID: %s)。", g.ID, msg.GetBaseMessage().MessageID)
 			g.messageQueue = g.messageQueue[1:]
 		}
 	}
