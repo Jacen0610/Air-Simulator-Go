@@ -115,5 +115,5 @@ const (
 )
 
 const (
-	BaseIntervalMultiple = 10
+	BaseIntervalMultiple = 1
 )
