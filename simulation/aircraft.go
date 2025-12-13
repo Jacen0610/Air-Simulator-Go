@@ -191,35 +191,35 @@ func (a *Aircraft) GetObservation(comms *CommunicationSystem) AgentObservation {
 func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 {
 	reward := float32(0)
 
-	// 1. 处理 ACK 超时和重传 (逻辑无变化)
-	var timedOutWaiters []*ackWaiter
-	a.ackWaiters.Range(func(key, value interface{}) bool {
-		waiter := value.(*ackWaiter)
-		if time.Since(waiter.sendTime) > config.AckTimeout {
-			timedOutWaiters = append(timedOutWaiters, waiter)
-		}
-		return true
-	})
+	//// 1. 处理 ACK 超时和重传 (逻辑无变化)
+	//var timedOutWaiters []*ackWaiter
+	//a.ackWaiters.Range(func(key, value interface{}) bool {
+	//	waiter := value.(*ackWaiter)
+	//	if time.Since(waiter.sendTime) > config.AckTimeout {
+	//		timedOutWaiters = append(timedOutWaiters, waiter)
+	//	}
+	//	return true
+	//})
 
-	if len(timedOutWaiters) > 0 {
-		a.outboundMutex.Lock()
-		for _, waiter := range timedOutWaiters {
-			a.ackWaiters.Delete(waiter.message.GetBaseMessage().MessageID)
-			log.Printf("⏰ [飞机 %s] 等待报文 (ID: %s) 的 ACK 超时！将重新排队...", a.CurrentFlightID, waiter.message.GetBaseMessage().MessageID)
-			atomic.AddUint64(&a.totalRetries, 1)
-			reward -= 25.0 // 超时重传是一个严重的负面事件
-			item := outboxItem{
-				message:          waiter.message,
-				enqueueTime:      time.Now(),
-				isRetransmission: true,
-			}
-			a.outboundQueue = append(a.outboundQueue, item)
-		}
-		sort.Slice(a.outboundQueue, func(i, j int) bool {
-			return a.outboundQueue[i].enqueueTime.Before(a.outboundQueue[j].enqueueTime)
-		})
-		a.outboundMutex.Unlock()
-	}
+	//if len(timedOutWaiters) > 0 {
+	//	a.outboundMutex.Lock()
+	//	for _, waiter := range timedOutWaiters {
+	//		a.ackWaiters.Delete(waiter.message.GetBaseMessage().MessageID)
+	//		log.Printf("⏰ [飞机 %s] 等待报文 (ID: %s) 的 ACK 超时！将重新排队...", a.CurrentFlightID, waiter.message.GetBaseMessage().MessageID)
+	//		atomic.AddUint64(&a.totalRetries, 1)
+	//		reward -= 25.0 // 超时重传是一个严重的负面事件
+	//		item := outboxItem{
+	//			message:          waiter.message,
+	//			enqueueTime:      time.Now(),
+	//			isRetransmission: true,
+	//		}
+	//		a.outboundQueue = append(a.outboundQueue, item)
+	//	}
+	//	sort.Slice(a.outboundQueue, func(i, j int) bool {
+	//		return a.outboundQueue[i].enqueueTime.Before(a.outboundQueue[j].enqueueTime)
+	//	})
+	//	a.outboundMutex.Unlock()
+	//}
 
 	// 2. 根据动作执行决策
 	itemToSend := a.peekMessage()
@@ -254,9 +254,9 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 			// 新的惩罚公式
 			penalty := basePenaltyForIdleWait + (float32(queueLen) * queueLengthPenaltyFactor) + (waitTime * timePenaltyFactor)
 
-			if itemToSend.isRetransmission {
-				penalty += 15.0 // 对延迟重传的消息施加额外惩罚
-			}
+			//if itemToSend.isRetransmission {
+			//	penalty += 15.0 // 对延迟重传的消息施加额外惩罚
+			//}
 			reward -= penalty
 		}
 	case ActionSend:
@@ -297,25 +297,32 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 		}
 		a.ackWaiters.Store(msg.GetBaseMessage().MessageID, waiter)
 
-		// --- [新的分段指数衰减奖励函数] ---
-		const maxReward = 25.0  // 成功发送的最高奖励
-		const decayRate = 5.0   // 衰减率：这个值越大，奖励随时间下降得越快
-		const optimalTime = 0.4 // 400ms 的理论最优时间 (秒)
+		// --- [修正后的分段线性衰减奖励函数] ---
+		// 目标：奖励快速发送，惩罚过度延迟的成功发送，以避免智能体选择过于保守的策略。
+		const maxReward = 25.0     // 成功发送的最高奖励
+		const optimalTime = 0.4    // 400ms 的理论最优时间 (秒)
+		const zeroRewardTime = 1.5 // 1.5s 延迟，奖励降为0
+		const maxPenaltyTime = 3.0 // 3s 延迟，惩罚达到最大值 (-25.0)
 
 		waitTimeSeconds := waitTime.Seconds()
 		var reward float32
 
 		if waitTimeSeconds <= optimalTime {
-			// 如果延时在理论最优时间内，给予满分奖励
+			// 1. 在最优时间内发送，获得满分奖励
 			reward = maxReward
+		} else if waitTimeSeconds <= zeroRewardTime {
+			// 2. 超过最优时间但在零奖励时间之内，奖励线性下降
+			//    计算从 optimalTime 到 zeroRewardTime 的进度
+			progress := (waitTimeSeconds - optimalTime) / (zeroRewardTime - optimalTime)
+			reward = maxReward * float32(1.0-progress)
 		} else {
-			// 如果延时超过理论最优时间，对超出部分进行指数惩罚
-			timeOverOptimal := waitTimeSeconds - optimalTime
-			reward = float32(maxReward * math.Exp(-decayRate*timeOverOptimal))
+			// 3. 超过零奖励时间，开始施加负奖励（惩罚）
+			//    计算从 zeroRewardTime 到 maxPenaltyTime 的惩罚进度
+			progress := math.Min(1.0, (waitTimeSeconds-zeroRewardTime)/(maxPenaltyTime-zeroRewardTime))
+			reward = -maxReward * float32(progress)
 		}
 
-		// 确保即使延时很长，成功发送也能获得一个微小的正奖励，以区别于碰撞
-		return max(reward, 1.0)
+		return reward
 	} else {
 		atomic.AddUint64(&a.totalCollisions, 1)
 		log.Printf("💥 [飞机 %s] 发送报文 (ID: %s) 时失败(碰撞)。", a.CurrentFlightID, msg.GetBaseMessage().MessageID)
