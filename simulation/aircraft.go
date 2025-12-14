@@ -228,7 +228,7 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 		if action == ActionSend {
 			reward -= 10.0 // 惩罚在没有消息时尝试发送的动作
 		} else { // ActionWait
-			reward += 1.0 // 奖励在没有消息时正确等待的动作
+			reward += 0.1 // 奖励在没有消息时正确等待的动作
 		}
 		return reward
 	}
@@ -240,24 +240,7 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 			// 信道繁忙，等待是合理的，但仍有轻微的时间成本
 			reward -= 0.5
 		} else {
-			// [核心修改] 信道空闲但智能体选择等待，这是一个非常糟糕的决策，必须重罚！
-			const basePenaltyForIdleWait = 20.0 // 引入一个巨大的基础惩罚
-			const queueLengthPenaltyFactor = 5.0
-			const timePenaltyFactor = 2.0
-
-			a.outboundMutex.RLock()
-			queueLen := len(a.outboundQueue)
-			a.outboundMutex.RUnlock()
-
-			waitTime := float32(time.Since(itemToSend.enqueueTime).Seconds())
-
-			// 新的惩罚公式
-			penalty := basePenaltyForIdleWait + (float32(queueLen) * queueLengthPenaltyFactor) + (waitTime * timePenaltyFactor)
-
-			//if itemToSend.isRetransmission {
-			//	penalty += 15.0 // 对延迟重传的消息施加额外惩罚
-			//}
-			reward -= penalty
+			reward -= 20
 		}
 	case ActionSend:
 		// 尝试在主信道上发送
@@ -273,7 +256,7 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 
 	if channel.IsBusy() {
 		atomic.AddUint64(&a.totalFailRqTunnel, 1)
-		return -2.0 // 尝试在繁忙信道发送的惩罚
+		return -1.0 // 尝试在繁忙信道发送的惩罚
 	}
 
 	atomic.AddUint64(&a.totalTxAttempts, 1)
