@@ -26,9 +26,19 @@ type outboxItem struct {
 	isRetransmission bool // 标记此条目是否为重传
 }
 
+// AgentObservation 定义了强化学习代理的观测状态
+type AgentObservation struct {
+	IsChannelBusy           float32 `json:"is_channel_busy"`            // 1. 信道是否忙碌
+	HasDataToSend           float32 `json:"has_data_to_send"`           // 2. 自身是否有数据待发送
+	LastSendCausedCollision float32 `json:"last_send_caused_collision"` // 3. 上一次发送是否导致碰撞
+	ChannelBusyRatio        float32 `json:"channel_busy_ratio"`         // 4. 信道拥堵率
+	ConsecutiveIdleSteps    float32 `json:"consecutive_idle_steps"`     // 5. 连续空闲步数
+	PacketWaitingTime       float32 `json:"packet_waiting_time"`        // 6. 数据包等待时间 (单位: 步)
+	StepsSinceLastCollision float32 `json:"steps_since_last_collision"` // 7. 距离上次碰撞的步数
+}
+
 // Aircraft 结构体定义了一架航空器的所有关键参数
 type Aircraft struct {
-	// ... (结构体字段保持不变)
 	ICAOAddress  string `json:"icaoAddress"`
 	Registration string `json:"registration"`
 	AircraftType string `json:"aircraftType"`
@@ -57,6 +67,7 @@ type Aircraft struct {
 	outboundMutex sync.RWMutex
 	ackWaiters    sync.Map
 
+	// 统计数据
 	totalTxAttempts   uint64
 	totalCollisions   uint64
 	successfulTx      uint64
@@ -66,11 +77,19 @@ type Aircraft struct {
 	totalWaitTimeNs   atomic.Int64
 	waitTimes         []time.Duration
 	waitTimesMutex    sync.Mutex
+
+	// --- 新增：强化学习状态追踪 ---
+	lastSendCausedCollision bool   // 状态3: 上一次发送是否导致碰撞
+	channelBusyHistory      []bool // 用于计算状态4: 信道拥堵率
+	consecutiveIdleSteps    int    // 状态5: 连续空闲步数
+	stepsSinceLastCollision int    // 状态7: 距离上次碰撞的步数
+	packetWaitingSteps      int    // 状态6: 数据包等待时间 (步数)
+	rlStateMutex            sync.RWMutex
 }
 
 // NewAircraft 创建一个航空器实例的构造函数
 func NewAircraft(icaoAddr, reg, aircraftType, manufacturer, serialNum, airlineCode string) *Aircraft {
-	return &Aircraft{
+	a := &Aircraft{
 		ICAOAddress:             icaoAddr,
 		Registration:            reg,
 		AircraftType:            aircraftType,
@@ -84,6 +103,8 @@ func NewAircraft(icaoAddr, reg, aircraftType, manufacturer, serialNum, airlineCo
 		ackWaiters:              sync.Map{},
 		waitTimes:               make([]time.Duration, 0, 100),
 	}
+	a.Reset() // 使用 Reset 方法来初始化所有状态
+	return a
 }
 
 // EnqueueMessage 将一个新消息放入飞机的发件箱。
@@ -151,80 +172,103 @@ func (a *Aircraft) StartListening(comms *CommunicationSystem) {
 	}
 }
 
-// GetObservation 为 MARL 代理生成当前的观测数据 (无变化)
+// --- [重构后] GetObservation ---
+// 为 MARL 代理生成当前的7维观测状态
 func (a *Aircraft) GetObservation(comms *CommunicationSystem) AgentObservation {
+	a.rlStateMutex.RLock()
+	defer a.rlStateMutex.RUnlock()
 	a.outboundMutex.RLock()
-	queueLen := len(a.outboundQueue)
-	a.outboundMutex.RUnlock()
+	defer a.outboundMutex.RUnlock()
 
-	var pendingAcks int32
-	a.ackWaiters.Range(func(_, _ interface{}) bool {
-		pendingAcks++
-		return true
-	})
-
-	obs := AgentObservation{
-		PrimaryChannelBusy:  comms.PrimaryChannel.IsBusy(),
-		OutboundQueueLength: int32(queueLen),
-		PendingAcksCount:    pendingAcks,
-	}
-	// 在单信道模式下，comms.BackupChannel 将为 nil，
-	// obs.BackupChannelBusy 将保持其默认值 false，这是正确的。
-	if comms.BackupChannel != nil {
-		obs.BackupChannelBusy = comms.BackupChannel.IsBusy()
+	// 1. 信道是否忙碌
+	isBusy := comms.PrimaryChannel.IsBusy()
+	isBusyVal := float32(0)
+	if isBusy {
+		isBusyVal = 1.0
 	}
 
-	if topItem := a.peekMessage(); topItem != nil {
-		obs.HasMessage = true
-		obs.TopMessageWaitTimeSeconds = float32(time.Since(topItem.enqueueTime).Seconds())
-		obs.IsRetransmission = topItem.isRetransmission
-	} else {
-		obs.HasMessage = false
-		obs.TopMessageWaitTimeSeconds = 0
-		obs.IsRetransmission = false
+	// 2. 自身是否有数据待发送
+	hasDataVal := float32(0)
+	if len(a.outboundQueue) > 0 {
+		hasDataVal = 1.0
 	}
 
-	return obs
+	// 3. 上一次发送是否导致碰撞
+	lastSendCollisionVal := float32(0)
+	if a.lastSendCausedCollision {
+		lastSendCollisionVal = 1.0
+	}
+
+	// 4. 信道拥堵率
+	var busyRatio float32
+	if len(a.channelBusyHistory) > 0 {
+		busyCount := 0
+		for _, busy := range a.channelBusyHistory {
+			if busy {
+				busyCount++
+			}
+		}
+		busyRatio = float32(busyCount) / float32(len(a.channelBusyHistory))
+	}
+
+	return AgentObservation{
+		IsChannelBusy:           isBusyVal,
+		HasDataToSend:           hasDataVal,
+		LastSendCausedCollision: lastSendCollisionVal,
+		ChannelBusyRatio:        busyRatio,
+		ConsecutiveIdleSteps:    float32(a.consecutiveIdleSteps),
+		PacketWaitingTime:       float32(a.packetWaitingSteps),
+		StepsSinceLastCollision: float32(a.stepsSinceLastCollision),
+	}
 }
 
-// [修改后] Step 函数: 执行一步决策并返回奖励，适配单信道双动作空间
+// updateRLState 在每个 Step 开始时更新状态
+func (a *Aircraft) updateRLState(comms *CommunicationSystem) {
+	a.rlStateMutex.Lock()
+	defer a.rlStateMutex.Unlock()
+
+	// 更新信道历史记录
+	const sequenceLength = 10
+	isBusy := comms.PrimaryChannel.IsBusy()
+	if len(a.channelBusyHistory) >= sequenceLength {
+		// 移除最旧的记录
+		a.channelBusyHistory = a.channelBusyHistory[1:]
+	}
+	a.channelBusyHistory = append(a.channelBusyHistory, isBusy)
+
+	// 更新连续空闲步数
+	if !isBusy {
+		a.consecutiveIdleSteps++
+	} else {
+		a.consecutiveIdleSteps = 0
+	}
+
+	// 更新距离上次碰撞的步数
+	a.stepsSinceLastCollision++
+
+	// 更新数据包等待步数
+	if a.peekMessage() != nil {
+		a.packetWaitingSteps++
+	} else {
+		// 如果没有消息，等待时间自然为0
+		a.packetWaitingSteps = 0
+	}
+}
+
+// Step 函数: 执行一步决策并返回奖励
 func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 {
+	// 在决策前更新 RL 状态
+	a.updateRLState(comms)
+
 	reward := float32(0)
-
-	//// 1. 处理 ACK 超时和重传 (逻辑无变化)
-	//var timedOutWaiters []*ackWaiter
-	//a.ackWaiters.Range(func(key, value interface{}) bool {
-	//	waiter := value.(*ackWaiter)
-	//	if time.Since(waiter.sendTime) > config.AckTimeout {
-	//		timedOutWaiters = append(timedOutWaiters, waiter)
-	//	}
-	//	return true
-	//})
-
-	//if len(timedOutWaiters) > 0 {
-	//	a.outboundMutex.Lock()
-	//	for _, waiter := range timedOutWaiters {
-	//		a.ackWaiters.Delete(waiter.message.GetBaseMessage().MessageID)
-	//		log.Printf("⏰ [飞机 %s] 等待报文 (ID: %s) 的 ACK 超时！将重新排队...", a.CurrentFlightID, waiter.message.GetBaseMessage().MessageID)
-	//		atomic.AddUint64(&a.totalRetries, 1)
-	//		reward -= 25.0 // 超时重传是一个严重的负面事件
-	//		item := outboxItem{
-	//			message:          waiter.message,
-	//			enqueueTime:      time.Now(),
-	//			isRetransmission: true,
-	//		}
-	//		a.outboundQueue = append(a.outboundQueue, item)
-	//	}
-	//	sort.Slice(a.outboundQueue, func(i, j int) bool {
-	//		return a.outboundQueue[i].enqueueTime.Before(a.outboundQueue[j].enqueueTime)
-	//	})
-	//	a.outboundMutex.Unlock()
-	//}
-
-	// 2. 根据动作执行决策
 	itemToSend := a.peekMessage()
+
+	// 根据动作执行决策
 	if itemToSend == nil {
 		// 如果没有消息要发送
+		a.rlStateMutex.Lock()
+		a.lastSendCausedCollision = false // 没有发送，所以没有碰撞
+		a.rlStateMutex.Unlock()
 		if action == ActionSend {
 			reward -= 10.0 // 惩罚在没有消息时尝试发送的动作
 		} else { // ActionWait
@@ -236,11 +280,13 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 	// 如果有消息要发送
 	switch action {
 	case ActionWait:
+		a.rlStateMutex.Lock()
+		a.lastSendCausedCollision = false // 等待不算发送，重置碰撞标志
+		a.rlStateMutex.Unlock()
 		if comms.PrimaryChannel.IsBusy() {
-			// 信道繁忙，等待是合理的，但仍有轻微的时间成本
-			reward -= 0.5
+			reward -= 0.5 // 信道繁忙，等待是合理的，但仍有轻微的时间成本
 		} else {
-			reward -= 20
+			reward -= 20 // 信道空闲却等待，重罚
 		}
 	case ActionSend:
 		// 尝试在主信道上发送
@@ -249,13 +295,16 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 	return reward
 }
 
-// attemptSendOnChannel 尝试在指定信道上发送消息 (无变化)
+// attemptSendOnChannel 尝试在指定信道上发送消息
 func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) float32 {
 	atomic.AddUint64(&a.totalRqTunnel, 1)
 	time.Sleep(time.Duration(10+rand.Intn(41)) * time.Microsecond)
 
 	if channel.IsBusy() {
 		atomic.AddUint64(&a.totalFailRqTunnel, 1)
+		a.rlStateMutex.Lock()
+		a.lastSendCausedCollision = false // 这是一个发送失败，但不是碰撞
+		a.rlStateMutex.Unlock()
 		return -1.0 // 尝试在繁忙信道发送的惩罚
 	}
 
@@ -263,9 +312,9 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 	msg := item.message
 
 	if channel.AttemptTransmit(msg, a.CurrentFlightID, config.TransmissionTime) {
+		// --- 发送成功 ---
 		waitTime := time.Since(item.enqueueTime)
 		a.totalWaitTimeNs.Add(waitTime.Nanoseconds())
-
 		a.waitTimesMutex.Lock()
 		a.waitTimes = append(a.waitTimes, waitTime)
 		a.waitTimesMutex.Unlock()
@@ -280,41 +329,45 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 		}
 		a.ackWaiters.Store(msg.GetBaseMessage().MessageID, waiter)
 
-		// --- [修正后的分段线性衰减奖励函数] ---
-		// 目标：奖励快速发送，惩罚过度延迟的成功发送，以避免智能体选择过于保守的策略。
-		const maxReward = 25.0     // 成功发送的最高奖励
-		const optimalTime = 0.4    // 400ms 的理论最优时间 (秒)
-		const zeroRewardTime = 1.5 // 1.5s 延迟，奖励降为0
-		const maxPenaltyTime = 3.0 // 3s 延迟，惩罚达到最大值 (-25.0)
+		a.rlStateMutex.Lock()
+		a.lastSendCausedCollision = false // 发送成功，没有碰撞
+		a.packetWaitingSteps = 0          // 消息已发送，重置等待步数
+		a.rlStateMutex.Unlock()
 
+		// --- [分段线性衰减奖励函数] ---
+		const maxReward = 25.0
+		const optimalTime = 0.4
+		const zeroRewardTime = 1.5
+		const maxPenaltyTime = 3.0
 		waitTimeSeconds := waitTime.Seconds()
 		var reward float32
-
 		if waitTimeSeconds <= optimalTime {
-			// 1. 在最优时间内发送，获得满分奖励
 			reward = maxReward
 		} else if waitTimeSeconds <= zeroRewardTime {
-			// 2. 超过最优时间但在零奖励时间之内，奖励线性下降
-			//    计算从 optimalTime 到 zeroRewardTime 的进度
 			progress := (waitTimeSeconds - optimalTime) / (zeroRewardTime - optimalTime)
 			reward = maxReward * float32(1.0-progress)
 		} else {
-			// 3. 超过零奖励时间，开始施加负奖励（惩罚）
-			//    计算从 zeroRewardTime 到 maxPenaltyTime 的惩罚进度
 			progress := math.Min(1.0, (waitTimeSeconds-zeroRewardTime)/(maxPenaltyTime-zeroRewardTime))
 			reward = -maxReward * float32(progress)
 		}
-
 		return reward
 	} else {
+		// --- 发送失败 (碰撞) ---
 		atomic.AddUint64(&a.totalCollisions, 1)
 		log.Printf("💥 [飞机 %s] 发送报文 (ID: %s) 时失败(碰撞)。", a.CurrentFlightID, msg.GetBaseMessage().MessageID)
+
+		a.rlStateMutex.Lock()
+		a.lastSendCausedCollision = true // 标记发生碰撞
+		a.stepsSinceLastCollision = 0    // 重置碰撞计数器
+		a.rlStateMutex.Unlock()
+
 		return -50.0 // 碰撞是严重的负面事件
 	}
 }
 
-// Reset 重置飞机状态 (无变化)
+// Reset 重置飞机状态
 func (a *Aircraft) Reset() {
+	// 重置统计数据
 	atomic.StoreUint64(&a.totalTxAttempts, 0)
 	atomic.StoreUint64(&a.totalCollisions, 0)
 	atomic.StoreUint64(&a.successfulTx, 0)
@@ -335,6 +388,16 @@ func (a *Aircraft) Reset() {
 		a.ackWaiters.Delete(key)
 		return true
 	})
+
+	// --- 新增：重置强化学习状态 ---
+	a.rlStateMutex.Lock()
+	defer a.rlStateMutex.Unlock()
+	const sequenceLength = 10
+	a.lastSendCausedCollision = false
+	a.channelBusyHistory = make([]bool, 0, sequenceLength)
+	a.consecutiveIdleSteps = 0
+	a.stepsSinceLastCollision = 0
+	a.packetWaitingSteps = 0
 }
 
 // GetWaitTimes 返回一个线程安全的等待时间副本

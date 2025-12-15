@@ -7,23 +7,22 @@ package proto;
 // Go 的包路径选项
 option go_package = "Air-Simulator/proto";
 
-// [修改后] 定义智能体可以执行的动作枚举，简化为2个动作
+// 定义智能体可以执行的动作枚举
 enum Action {
   ACTION_WAIT = 0; // 代表智能体选择等待
   ACTION_SEND = 1; // 代表智能体尝试在主信道发送消息
 }
 
-// 定义单个智能体的观测数据结构 (维持原样)
-// 这将是神经网络的输入
+// [重构后] 定义单个智能体的观测数据结构
+// 这将是神经网络的输入，所有维度都使用 float 类型以便于处理
 message AgentObservation {
-  bool has_message = 1;
-  bool primary_channel_busy = 2;
-  // 注意：在单信道模式下，此字段将始终为 false
-  bool backup_channel_busy = 3; 
-  int32 pending_acks_count = 4;
-  int32 outbound_queue_length = 5;
-  float top_message_wait_time_seconds = 6;
-  bool is_retransmission = 7;
+  float is_channel_busy = 1;             // 1. 信道是否忙碌 (1.0 for busy, 0.0 for idle)
+  float has_data_to_send = 2;            // 2. 自身是否有数据待发送 (1.0 for yes, 0.0 for no)
+  float last_send_caused_collision = 3;  // 3. 上一次发送是否导致碰撞 (1.0 for collision, 0.0 for no)
+  float channel_busy_ratio = 4;          // 4. 信道拥堵率 (0.0 to 1.0)
+  float consecutive_idle_steps = 5;      // 5. 连续空闲步数
+  float packet_waiting_time = 6;         // 6. 数据包等待时间 (单位: 步)
+  float steps_since_last_collision = 7;  // 7. 距离上次碰撞的步数
 }
 
 // 定义 Step 函数返回的单个智能体的完整结果
@@ -33,12 +32,12 @@ message AgentState {
   bool done = 3; // 标志着一个 episode 是否结束
 }
 
-// [修改后] 定义 Step 函数的请求体，不再需要 map
+// 定义 Step 函数的请求体
 message StepRequest {
   Action action = 1;
 }
 
-// [修改后] 定义 Step 函数的响应体，不再需要 map
+// 定义 Step 函数的响应体
 message StepResponse {
   AgentState state = 1;
 }
@@ -46,7 +45,7 @@ message StepResponse {
 // 定义 Reset 函数的请求体 (通常为空)
 message ResetRequest {}
 
-// [修改后] 定义 Reset 函数的响应体，不再需要 map
+// 定义 Reset 函数的响应体
 message ResetResponse {
   AgentState state = 1;
 }
