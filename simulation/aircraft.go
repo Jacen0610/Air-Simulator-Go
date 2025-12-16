@@ -172,34 +172,29 @@ func (a *Aircraft) StartListening(comms *CommunicationSystem) {
 	}
 }
 
-// --- [重构后] GetObservation ---
-// 为 MARL 代理生成当前的7维观测状态
+// GetObservation 为 MARL 代理生成当前的7维观测状态
 func (a *Aircraft) GetObservation(comms *CommunicationSystem) AgentObservation {
 	a.rlStateMutex.RLock()
 	defer a.rlStateMutex.RUnlock()
 	a.outboundMutex.RLock()
 	defer a.outboundMutex.RUnlock()
 
-	// 1. 信道是否忙碌
 	isBusy := comms.PrimaryChannel.IsBusy()
 	isBusyVal := float32(0)
 	if isBusy {
 		isBusyVal = 1.0
 	}
 
-	// 2. 自身是否有数据待发送
 	hasDataVal := float32(0)
 	if len(a.outboundQueue) > 0 {
 		hasDataVal = 1.0
 	}
 
-	// 3. 上一次发送是否导致碰撞
 	lastSendCollisionVal := float32(0)
 	if a.lastSendCausedCollision {
 		lastSendCollisionVal = 1.0
 	}
 
-	// 4. 信道拥堵率
 	var busyRatio float32
 	if len(a.channelBusyHistory) > 0 {
 		busyCount := 0
@@ -227,69 +222,62 @@ func (a *Aircraft) updateRLState(comms *CommunicationSystem) {
 	a.rlStateMutex.Lock()
 	defer a.rlStateMutex.Unlock()
 
-	// 更新信道历史记录
 	const sequenceLength = 10
 	isBusy := comms.PrimaryChannel.IsBusy()
 	if len(a.channelBusyHistory) >= sequenceLength {
-		// 移除最旧的记录
 		a.channelBusyHistory = a.channelBusyHistory[1:]
 	}
 	a.channelBusyHistory = append(a.channelBusyHistory, isBusy)
 
-	// 更新连续空闲步数
 	if !isBusy {
 		a.consecutiveIdleSteps++
 	} else {
 		a.consecutiveIdleSteps = 0
 	}
 
-	// 更新距离上次碰撞的步数
 	a.stepsSinceLastCollision++
 
-	// 更新数据包等待步数
 	if a.peekMessage() != nil {
 		a.packetWaitingSteps++
 	} else {
-		// 如果没有消息，等待时间自然为0
 		a.packetWaitingSteps = 0
 	}
 }
 
 // Step 函数: 执行一步决策并返回奖励
 func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 {
-	// 在决策前更新 RL 状态
 	a.updateRLState(comms)
 
 	reward := float32(0)
 	itemToSend := a.peekMessage()
 
-	// 根据动作执行决策
 	if itemToSend == nil {
-		// 如果没有消息要发送
 		a.rlStateMutex.Lock()
-		a.lastSendCausedCollision = false // 没有发送，所以没有碰撞
+		a.lastSendCausedCollision = false
 		a.rlStateMutex.Unlock()
 		if action == ActionSend {
-			reward -= 10.0 // 惩罚在没有消息时尝试发送的动作
-		} else { // ActionWait
-			reward += 0.1 // 奖励在没有消息时正确等待的动作
+			reward -= 10.0
+		} else {
+			reward += 0.1
 		}
 		return reward
 	}
 
-	// 如果有消息要发送
 	switch action {
 	case ActionWait:
 		a.rlStateMutex.Lock()
-		a.lastSendCausedCollision = false // 等待不算发送，重置碰撞标志
+		a.lastSendCausedCollision = false
 		a.rlStateMutex.Unlock()
-		if comms.PrimaryChannel.IsBusy() {
-			reward -= 0.5 // 信道繁忙，等待是合理的，但仍有轻微的时间成本
-		} else {
-			reward -= 20 // 信道空闲却等待，重罚
-		}
+
+		// --- [核心修改] 解决“懒惰代理”问题 ---
+		// 惩罚与等待时间挂钩，等待越久，惩罚越重
+		const waitingPenaltyFactor = 0.2 // 每等待一步的惩罚系数
+		a.rlStateMutex.RLock()
+		penalty := waitingPenaltyFactor * float32(a.packetWaitingSteps)
+		a.rlStateMutex.RUnlock()
+		reward -= penalty
+
 	case ActionSend:
-		// 尝试在主信道上发送
 		reward += a.attemptSendOnChannel(itemToSend, comms.PrimaryChannel)
 	}
 	return reward
@@ -303,16 +291,15 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 	if channel.IsBusy() {
 		atomic.AddUint64(&a.totalFailRqTunnel, 1)
 		a.rlStateMutex.Lock()
-		a.lastSendCausedCollision = false // 这是一个发送失败，但不是碰撞
+		a.lastSendCausedCollision = false
 		a.rlStateMutex.Unlock()
-		return -1.0 // 尝试在繁忙信道发送的惩罚
+		return -1.0
 	}
 
 	atomic.AddUint64(&a.totalTxAttempts, 1)
 	msg := item.message
 
 	if channel.AttemptTransmit(msg, a.CurrentFlightID, config.TransmissionTime) {
-		// --- 发送成功 ---
 		waitTime := time.Since(item.enqueueTime)
 		a.totalWaitTimeNs.Add(waitTime.Nanoseconds())
 		a.waitTimesMutex.Lock()
@@ -330,11 +317,10 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 		a.ackWaiters.Store(msg.GetBaseMessage().MessageID, waiter)
 
 		a.rlStateMutex.Lock()
-		a.lastSendCausedCollision = false // 发送成功，没有碰撞
-		a.packetWaitingSteps = 0          // 消息已发送，重置等待步数
+		a.lastSendCausedCollision = false
+		a.packetWaitingSteps = 0
 		a.rlStateMutex.Unlock()
 
-		// --- [分段线性衰减奖励函数] ---
 		const maxReward = 25.0
 		const optimalTime = 0.4
 		const zeroRewardTime = 1.5
@@ -352,22 +338,20 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 		}
 		return reward
 	} else {
-		// --- 发送失败 (碰撞) ---
 		atomic.AddUint64(&a.totalCollisions, 1)
 		log.Printf("💥 [飞机 %s] 发送报文 (ID: %s) 时失败(碰撞)。", a.CurrentFlightID, msg.GetBaseMessage().MessageID)
 
 		a.rlStateMutex.Lock()
-		a.lastSendCausedCollision = true // 标记发生碰撞
-		a.stepsSinceLastCollision = 0    // 重置碰撞计数器
+		a.lastSendCausedCollision = true
+		a.stepsSinceLastCollision = 0
 		a.rlStateMutex.Unlock()
 
-		return -50.0 // 碰撞是严重的负面事件
+		return -50.0
 	}
 }
 
 // Reset 重置飞机状态
 func (a *Aircraft) Reset() {
-	// 重置统计数据
 	atomic.StoreUint64(&a.totalTxAttempts, 0)
 	atomic.StoreUint64(&a.totalCollisions, 0)
 	atomic.StoreUint64(&a.successfulTx, 0)
@@ -389,7 +373,6 @@ func (a *Aircraft) Reset() {
 		return true
 	})
 
-	// --- 新增：重置强化学习状态 ---
 	a.rlStateMutex.Lock()
 	defer a.rlStateMutex.Unlock()
 	const sequenceLength = 10
