@@ -269,9 +269,7 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 		a.lastSendCausedCollision = false
 		a.rlStateMutex.Unlock()
 
-		// --- [核心修改] 解决“懒惰代理”问题 ---
-		// 惩罚与等待时间挂钩，等待越久，惩罚越重
-		const waitingPenaltyFactor = 0.2 // 每等待一步的惩罚系数
+		const waitingPenaltyFactor = 0.2
 		a.rlStateMutex.RLock()
 		penalty := waitingPenaltyFactor * float32(a.packetWaitingSteps)
 		a.rlStateMutex.RUnlock()
@@ -321,22 +319,22 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 		a.packetWaitingSteps = 0
 		a.rlStateMutex.Unlock()
 
-		const maxReward = 25.0
-		const optimalTime = 0.4
-		const zeroRewardTime = 1.5
-		const maxPenaltyTime = 3.0
+		// --- [核心修改] 单边高斯指数奖励函数 ---
 		waitTimeSeconds := waitTime.Seconds()
-		var reward float32
+		optimalTime := 0.4
+		var reward float64
+
 		if waitTimeSeconds <= optimalTime {
-			reward = maxReward
-		} else if waitTimeSeconds <= zeroRewardTime {
-			progress := (waitTimeSeconds - optimalTime) / (zeroRewardTime - optimalTime)
-			reward = maxReward * float32(1.0-progress)
+			// 如果时间小于等于理论最优值，直接给予满分
+			reward = 50.0
 		} else {
-			progress := math.Min(1.0, (waitTimeSeconds-zeroRewardTime)/(maxPenaltyTime-zeroRewardTime))
-			reward = -maxReward * float32(progress)
+			// 如果时间大于理论最优值，使用高斯函数进行衰减
+			timeDiff := waitTimeSeconds - optimalTime
+			exponent := -1.4 * timeDiff * timeDiff
+			reward = 49.0*math.Exp(exponent) + 1.0
 		}
-		return reward
+
+		return float32(reward)
 	} else {
 		atomic.AddUint64(&a.totalCollisions, 1)
 		log.Printf("💥 [飞机 %s] 发送报文 (ID: %s) 时失败(碰撞)。", a.CurrentFlightID, msg.GetBaseMessage().MessageID)
