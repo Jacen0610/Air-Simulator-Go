@@ -268,7 +268,7 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 		if action == ActionSend {
 			reward -= 10.0
 		} else {
-			reward += 0.2
+			reward += 1
 		}
 		return reward
 	}
