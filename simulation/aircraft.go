@@ -268,7 +268,7 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 		if action == ActionSend {
 			reward -= 10.0
 		} else {
-			reward += 1
+			reward += 1.0
 		}
 		return reward
 	}
@@ -276,7 +276,7 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 	switch action {
 	case ActionWait:
 		if comms.PrimaryChannel.IsBusy() {
-			reward += 0.5
+			reward -= 0.5
 			break
 		}
 		a.rlStateMutex.Lock()
@@ -289,15 +289,18 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 		a.rlStateMutex.RUnlock()
 		reward -= stepPenalty
 
-		const queuePenaltyFactor = 1
+		const queuePenaltyFactor = 5.0
 		a.rlStateMutex.RLock()
 		QueuePenalty := queuePenaltyFactor * float32(len(a.outboundQueue))
 		a.rlStateMutex.RUnlock()
 		reward -= QueuePenalty
 
-		const waitTimeFactor = 5
+		const waitTimeFactor = 2.0
 		waitTimePenalty := waitTimeFactor * float32(time.Since(itemToSend.enqueueTime).Seconds())
 		reward -= waitTimePenalty
+
+		const basePenalty = 20.0
+		reward -= basePenalty
 
 	case ActionSend:
 		reward += a.attemptSendOnChannel(itemToSend, comms.PrimaryChannel)
