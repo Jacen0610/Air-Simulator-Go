@@ -258,22 +258,36 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 		if action == ActionSend {
 			reward -= 10.0
 		} else {
-			reward += 0.1
+			reward += 0.2
 		}
 		return reward
 	}
 
 	switch action {
 	case ActionWait:
+		if comms.PrimaryChannel.IsBusy() {
+			reward += 0.5
+			break
+		}
 		a.rlStateMutex.Lock()
 		a.lastSendCausedCollision = false
 		a.rlStateMutex.Unlock()
 
-		const waitingPenaltyFactor = 0.2
+		const stepPenaltyFactor = 0.01
 		a.rlStateMutex.RLock()
-		penalty := waitingPenaltyFactor * float32(a.packetWaitingSteps)
+		stepPenalty := stepPenaltyFactor * float32(a.packetWaitingSteps)
 		a.rlStateMutex.RUnlock()
-		reward -= penalty
+		reward -= stepPenalty
+
+		const queuePenaltyFactor = 1
+		a.rlStateMutex.RLock()
+		QueuePenalty := queuePenaltyFactor * float32(len(a.outboundQueue))
+		a.rlStateMutex.RUnlock()
+		reward -= QueuePenalty
+
+		const waitTimeFactor = 5
+		waitTimePenalty := waitTimeFactor * float32(time.Since(itemToSend.enqueueTime).Seconds())
+		reward -= waitTimePenalty
 
 	case ActionSend:
 		reward += a.attemptSendOnChannel(itemToSend, comms.PrimaryChannel)
@@ -291,7 +305,7 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 		a.rlStateMutex.Lock()
 		a.lastSendCausedCollision = false
 		a.rlStateMutex.Unlock()
-		return -1.0
+		return -0.5
 	}
 
 	atomic.AddUint64(&a.totalTxAttempts, 1)
@@ -344,7 +358,7 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 		a.stepsSinceLastCollision = 0
 		a.rlStateMutex.Unlock()
 
-		return -50.0
+		return -30.0
 	}
 }
 
