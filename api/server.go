@@ -104,12 +104,14 @@ func (s *Server) Reset(ctx context.Context, req *proto.ResetRequest) (*proto.Res
 // 将 simulation 层的观测状态映射到 proto 层的消息结构。
 func mapObservationToProto(obs simulation.AgentObservation) *proto.AgentObservation {
 	return &proto.AgentObservation{
-		IsChannelBusy:           obs.IsChannelBusy,
-		HasDataToSend:           obs.HasDataToSend,
-		LastSendCausedCollision: obs.LastSendCausedCollision,
-		ChannelBusyRatio:        obs.ChannelBusyRatio,
-		ConsecutiveIdleSteps:    obs.ConsecutiveIdleSteps,
-		PacketWaitingTime:       obs.PacketWaitingTime,
-		StepsSinceLastCollision: obs.StepsSinceLastCollision,
+		IsChannelBusy:             obs.IsChannelBusy,
+		HasDataToSend:             obs.HasDataToSend,
+		LastSendCausedCollision:   obs.LastSendCausedCollision,
+		ChannelBusyRatio:          obs.ChannelBusyRatio,
+		ConsecutiveIdleSteps:      obs.ConsecutiveIdleSteps,
+		PacketWaitingTime:         obs.PacketWaitingTime,
+		StepsSinceLastCollision:   obs.StepsSinceLastCollision,
+		OutboundQueueLength:       obs.OutboundQueueLength,
+		TopMessageWaitTimeSeconds: obs.TopMessageWaitTimeSeconds,
 	}
 }

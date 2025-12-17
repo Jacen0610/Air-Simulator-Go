@@ -23,6 +23,8 @@ message AgentObservation {
   float consecutive_idle_steps = 5;      // 5. 连续空闲步数
   float packet_waiting_time = 6;         // 6. 数据包等待时间 (单位: 步)
   float steps_since_last_collision = 7;  // 7. 距离上次碰撞的步数
+  float outbound_queue_length = 8;       // 8. [新增] 发件箱队列的长度
+  float top_message_wait_time_seconds = 9; // 9. [新增] 队首消息的等待时间(秒)
 }
 
 // 定义 Step 函数返回的单个智能体的完整结果

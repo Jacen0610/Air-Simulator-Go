@@ -28,13 +28,15 @@ type outboxItem struct {
 
 // AgentObservation 定义了强化学习代理的观测状态
 type AgentObservation struct {
-	IsChannelBusy           float32 `json:"is_channel_busy"`            // 1. 信道是否忙碌
-	HasDataToSend           float32 `json:"has_data_to_send"`           // 2. 自身是否有数据待发送
-	LastSendCausedCollision float32 `json:"last_send_caused_collision"` // 3. 上一次发送是否导致碰撞
-	ChannelBusyRatio        float32 `json:"channel_busy_ratio"`         // 4. 信道拥堵率
-	ConsecutiveIdleSteps    float32 `json:"consecutive_idle_steps"`     // 5. 连续空闲步数
-	PacketWaitingTime       float32 `json:"packet_waiting_time"`        // 6. 数据包等待时间 (单位: 步)
-	StepsSinceLastCollision float32 `json:"steps_since_last_collision"` // 7. 距离上次碰撞的步数
+	IsChannelBusy             float32 `json:"is_channel_busy"`               // 1. 信道是否忙碌
+	HasDataToSend             float32 `json:"has_data_to_send"`              // 2. 自身是否有数据待发送
+	LastSendCausedCollision   float32 `json:"last_send_caused_collision"`    // 3. 上一次发送是否导致碰撞
+	ChannelBusyRatio          float32 `json:"channel_busy_ratio"`            // 4. 信道拥堵率
+	ConsecutiveIdleSteps      float32 `json:"consecutive_idle_steps"`        // 5. 连续空闲步数
+	PacketWaitingTime         float32 `json:"packet_waiting_time"`           // 6. 数据包等待时间 (单位: 步)
+	StepsSinceLastCollision   float32 `json:"steps_since_last_collision"`    // 7. 距离上次碰撞的步数
+	OutboundQueueLength       float32 `json:"outbound_queue_length"`         // 8. [新增] 发件箱队列长度
+	TopMessageWaitTimeSeconds float32 `json:"top_message_wait_time_seconds"` // 9. [新增] 队首消息的等待时间(秒)
 }
 
 // Aircraft 结构体定义了一架航空器的所有关键参数
@@ -78,12 +80,12 @@ type Aircraft struct {
 	waitTimes         []time.Duration
 	waitTimesMutex    sync.Mutex
 
-	// --- 新增：强化学习状态追踪 ---
-	lastSendCausedCollision bool   // 状态3: 上一次发送是否导致碰撞
-	channelBusyHistory      []bool // 用于计算状态4: 信道拥堵率
-	consecutiveIdleSteps    int    // 状态5: 连续空闲步数
-	stepsSinceLastCollision int    // 状态7: 距离上次碰撞的步数
-	packetWaitingSteps      int    // 状态6: 数据包等待时间 (步数)
+	// --- 强化学习状态追踪 ---
+	lastSendCausedCollision bool   // 状态3
+	channelBusyHistory      []bool // 状态4
+	consecutiveIdleSteps    int    // 状态5
+	stepsSinceLastCollision int    // 状态7
+	packetWaitingSteps      int    // 状态6
 	rlStateMutex            sync.RWMutex
 }
 
@@ -103,7 +105,7 @@ func NewAircraft(icaoAddr, reg, aircraftType, manufacturer, serialNum, airlineCo
 		ackWaiters:              sync.Map{},
 		waitTimes:               make([]time.Duration, 0, 100),
 	}
-	a.Reset() // 使用 Reset 方法来初始化所有状态
+	a.Reset()
 	return a
 }
 
@@ -115,7 +117,7 @@ func (a *Aircraft) EnqueueMessage(msg ACARSMessageInterface) {
 	item := outboxItem{
 		message:          msg,
 		enqueueTime:      time.Now(),
-		isRetransmission: false, // 新消息不是重传
+		isRetransmission: false,
 	}
 	a.outboundQueue = append(a.outboundQueue, item)
 
@@ -172,7 +174,7 @@ func (a *Aircraft) StartListening(comms *CommunicationSystem) {
 	}
 }
 
-// GetObservation 为 MARL 代理生成当前的7维观测状态
+// GetObservation 为 MARL 代理生成当前的观测状态
 func (a *Aircraft) GetObservation(comms *CommunicationSystem) AgentObservation {
 	a.rlStateMutex.RLock()
 	defer a.rlStateMutex.RUnlock()
@@ -185,8 +187,9 @@ func (a *Aircraft) GetObservation(comms *CommunicationSystem) AgentObservation {
 		isBusyVal = 1.0
 	}
 
+	queueLen := len(a.outboundQueue)
 	hasDataVal := float32(0)
-	if len(a.outboundQueue) > 0 {
+	if queueLen > 0 {
 		hasDataVal = 1.0
 	}
 
@@ -206,14 +209,21 @@ func (a *Aircraft) GetObservation(comms *CommunicationSystem) AgentObservation {
 		busyRatio = float32(busyCount) / float32(len(a.channelBusyHistory))
 	}
 
+	var topMsgWaitTime float32
+	if topItem := a.peekMessage(); topItem != nil {
+		topMsgWaitTime = float32(time.Since(topItem.enqueueTime).Seconds())
+	}
+
 	return AgentObservation{
-		IsChannelBusy:           isBusyVal,
-		HasDataToSend:           hasDataVal,
-		LastSendCausedCollision: lastSendCollisionVal,
-		ChannelBusyRatio:        busyRatio,
-		ConsecutiveIdleSteps:    float32(a.consecutiveIdleSteps),
-		PacketWaitingTime:       float32(a.packetWaitingSteps),
-		StepsSinceLastCollision: float32(a.stepsSinceLastCollision),
+		IsChannelBusy:             isBusyVal,
+		HasDataToSend:             hasDataVal,
+		LastSendCausedCollision:   lastSendCollisionVal,
+		ChannelBusyRatio:          busyRatio,
+		ConsecutiveIdleSteps:      float32(a.consecutiveIdleSteps),
+		PacketWaitingTime:         float32(a.packetWaitingSteps),
+		StepsSinceLastCollision:   float32(a.stepsSinceLastCollision),
+		OutboundQueueLength:       float32(queueLen),
+		TopMessageWaitTimeSeconds: topMsgWaitTime,
 	}
 }
 
@@ -333,16 +343,13 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 		a.packetWaitingSteps = 0
 		a.rlStateMutex.Unlock()
 
-		// --- [核心修改] 单边高斯指数奖励函数 ---
 		waitTimeSeconds := waitTime.Seconds()
 		optimalTime := 0.4
 		var reward float64
 
 		if waitTimeSeconds <= optimalTime {
-			// 如果时间小于等于理论最优值，直接给予满分
 			reward = 50.0
 		} else {
-			// 如果时间大于理论最优值，使用高斯函数进行衰减
 			timeDiff := waitTimeSeconds - optimalTime
 			exponent := -1.4 * timeDiff * timeDiff
 			reward = 49.0*math.Exp(exponent) + 1.0
