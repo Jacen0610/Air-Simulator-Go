@@ -100,18 +100,17 @@ func (s *Server) Reset(ctx context.Context, req *proto.ResetRequest) (*proto.Res
 	return &proto.ResetResponse{State: initialState}, nil
 }
 
-// --- [修复后] mapObservationToProto 辅助函数 ---
+// mapObservationToProto 辅助函数
 // 将 simulation 层的观测状态映射到 proto 层的消息结构。
 func mapObservationToProto(obs simulation.AgentObservation) *proto.AgentObservation {
 	return &proto.AgentObservation{
 		IsChannelBusy:             obs.IsChannelBusy,
 		HasDataToSend:             obs.HasDataToSend,
-		LastSendCausedCollision:   obs.LastSendCausedCollision,
-		ChannelBusyRatio:          obs.ChannelBusyRatio,
-		ConsecutiveIdleSteps:      obs.ConsecutiveIdleSteps,
-		PacketWaitingTime:         obs.PacketWaitingTime,
-		StepsSinceLastCollision:   obs.StepsSinceLastCollision,
 		OutboundQueueLength:       obs.OutboundQueueLength,
 		TopMessageWaitTimeSeconds: obs.TopMessageWaitTimeSeconds,
+		ConsecutiveIdleSteps:      obs.ConsecutiveIdleSteps,
+		LastSendCausedCollision:   obs.LastSendCausedCollision,
+		StepsSinceLastCollision:   obs.StepsSinceLastCollision,
+		ChannelBusyRatio:          obs.ChannelBusyRatio,
 	}
 }

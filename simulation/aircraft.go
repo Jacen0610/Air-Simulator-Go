@@ -26,19 +26,6 @@ type outboxItem struct {
 	isRetransmission bool // 标记此条目是否为重传
 }
 
-// AgentObservation 定义了强化学习代理的观测状态
-type AgentObservation struct {
-	IsChannelBusy             float32 `json:"is_channel_busy"`               // 1. 信道是否忙碌
-	HasDataToSend             float32 `json:"has_data_to_send"`              // 2. 自身是否有数据待发送
-	LastSendCausedCollision   float32 `json:"last_send_caused_collision"`    // 3. 上一次发送是否导致碰撞
-	ChannelBusyRatio          float32 `json:"channel_busy_ratio"`            // 4. 信道拥堵率
-	ConsecutiveIdleSteps      float32 `json:"consecutive_idle_steps"`        // 5. 连续空闲步数
-	PacketWaitingTime         float32 `json:"packet_waiting_time"`           // 6. 数据包等待时间 (单位: 步)
-	StepsSinceLastCollision   float32 `json:"steps_since_last_collision"`    // 7. 距离上次碰撞的步数
-	OutboundQueueLength       float32 `json:"outbound_queue_length"`         // 8. [新增] 发件箱队列长度
-	TopMessageWaitTimeSeconds float32 `json:"top_message_wait_time_seconds"` // 9. [新增] 队首消息的等待时间(秒)
-}
-
 // Aircraft 结构体定义了一架航空器的所有关键参数
 type Aircraft struct {
 	ICAOAddress  string `json:"icaoAddress"`
@@ -81,11 +68,11 @@ type Aircraft struct {
 	waitTimesMutex    sync.Mutex
 
 	// --- 强化学习状态追踪 ---
-	lastSendCausedCollision bool   // 状态3
-	channelBusyHistory      []bool // 状态4
+	lastSendCausedCollision bool   // 状态6
+	channelBusyHistory      []bool // 状态8
 	consecutiveIdleSteps    int    // 状态5
 	stepsSinceLastCollision int    // 状态7
-	packetWaitingSteps      int    // 状态6
+	packetWaitingSteps      int    // 内部追踪，不再是观测状态
 	rlStateMutex            sync.RWMutex
 }
 
@@ -217,13 +204,12 @@ func (a *Aircraft) GetObservation(comms *CommunicationSystem) AgentObservation {
 	return AgentObservation{
 		IsChannelBusy:             isBusyVal,
 		HasDataToSend:             hasDataVal,
-		LastSendCausedCollision:   lastSendCollisionVal,
-		ChannelBusyRatio:          busyRatio,
-		ConsecutiveIdleSteps:      float32(a.consecutiveIdleSteps),
-		PacketWaitingTime:         float32(a.packetWaitingSteps),
-		StepsSinceLastCollision:   float32(a.stepsSinceLastCollision),
 		OutboundQueueLength:       float32(queueLen),
 		TopMessageWaitTimeSeconds: topMsgWaitTime,
+		ConsecutiveIdleSteps:      float32(a.consecutiveIdleSteps),
+		LastSendCausedCollision:   lastSendCollisionVal,
+		StepsSinceLastCollision:   float32(a.stepsSinceLastCollision),
+		ChannelBusyRatio:          busyRatio,
 	}
 }
 
@@ -232,7 +218,7 @@ func (a *Aircraft) updateRLState(comms *CommunicationSystem) {
 	a.rlStateMutex.Lock()
 	defer a.rlStateMutex.Unlock()
 
-	const sequenceLength = 10
+	const sequenceLength = 1000
 	isBusy := comms.PrimaryChannel.IsBusy()
 	if len(a.channelBusyHistory) >= sequenceLength {
 		a.channelBusyHistory = a.channelBusyHistory[1:]
@@ -247,6 +233,7 @@ func (a *Aircraft) updateRLState(comms *CommunicationSystem) {
 
 	a.stepsSinceLastCollision++
 
+	// packetWaitingSteps 仍然在内部追踪，但不再作为观测状态
 	if a.peekMessage() != nil {
 		a.packetWaitingSteps++
 	} else {
@@ -397,11 +384,11 @@ func (a *Aircraft) Reset() {
 
 	a.rlStateMutex.Lock()
 	defer a.rlStateMutex.Unlock()
-	const sequenceLength = 10
+	const sequenceLength = 1000
 	a.lastSendCausedCollision = false
 	a.channelBusyHistory = make([]bool, 0, sequenceLength)
 	a.consecutiveIdleSteps = 0
-	a.stepsSinceLastCollision = 0
+	a.stepsSinceLastCollision = 1000000 // [核心修改] 初始化为一个大的值
 	a.packetWaitingSteps = 0
 }
 

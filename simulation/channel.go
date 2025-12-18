@@ -143,7 +143,9 @@ func (c *Channel) AttemptTransmit(msg ACARSMessageInterface, senderID string, tr
 		c.isBusy = false // 释放信道
 		busyDuration := time.Since(c.lastBusyTimestamp)
 		c.totalBusyTime += busyDuration
-		log.Printf("✅ [%s] 在 %s 上的传输 (传输ID: %d) 成功完成。信道已释放。", senderID, c.ID, myID)
+		if senderID != "BG_TRAFFIC" {
+			log.Printf("✅ [%s] 在 %s 上的传输 (传输ID: %d) 成功完成。信道已释放。", senderID, c.ID, myID)
+		}
 		return true // **[修改]** 返回 true 表示最终成功
 	} else {
 		// 失败：我们的传输被后续的碰撞所破坏。

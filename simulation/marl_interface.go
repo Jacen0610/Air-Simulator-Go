@@ -10,4 +10,14 @@ const (
 	ActionSend // 值为 1
 )
 
-// 注: AgentObservation 结构体定义已移至 aircraft.go 文件，以解决重复定义问题。
+// AgentObservation 定义了强化学习代理的观测状态
+type AgentObservation struct {
+	IsChannelBusy             float32 `json:"is_channel_busy"`               // 1. 信道是否忙碌
+	HasDataToSend             float32 `json:"has_data_to_send"`              // 2. 自身是否有数据待发送
+	OutboundQueueLength       float32 `json:"outbound_queue_length"`         // 3. 发件箱队列的长度
+	TopMessageWaitTimeSeconds float32 `json:"top_message_wait_time_seconds"` // 4. 队首消息的等待时间(秒)
+	ConsecutiveIdleSteps      float32 `json:"consecutive_idle_steps"`        // 5. 连续空闲步数
+	LastSendCausedCollision   float32 `json:"last_send_caused_collision"`    // 6. 上一次发送是否导致碰撞
+	StepsSinceLastCollision   float32 `json:"steps_since_last_collision"`    // 7. 距离上次碰撞的步数
+	ChannelBusyRatio          float32 `json:"channel_busy_ratio"`            // 8. 信道拥堵率
+}

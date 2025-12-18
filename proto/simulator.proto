@@ -18,13 +18,12 @@ enum Action {
 message AgentObservation {
   float is_channel_busy = 1;             // 1. 信道是否忙碌 (1.0 for busy, 0.0 for idle)
   float has_data_to_send = 2;            // 2. 自身是否有数据待发送 (1.0 for yes, 0.0 for no)
-  float last_send_caused_collision = 3;  // 3. 上一次发送是否导致碰撞 (1.0 for collision, 0.0 for no)
-  float channel_busy_ratio = 4;          // 4. 信道拥堵率 (0.0 to 1.0)
+  float outbound_queue_length = 3;       // 3. 发件箱队列的长度
+  float top_message_wait_time_seconds = 4; // 4. 队首消息的等待时间(秒)
   float consecutive_idle_steps = 5;      // 5. 连续空闲步数
-  float packet_waiting_time = 6;         // 6. 数据包等待时间 (单位: 步)
+  float last_send_caused_collision = 6;  // 6. 上一次发送是否导致碰撞 (1.0 for collision, 0.0 for no)
   float steps_since_last_collision = 7;  // 7. 距离上次碰撞的步数
-  float outbound_queue_length = 8;       // 8. [新增] 发件箱队列的长度
-  float top_message_wait_time_seconds = 9; // 9. [新增] 队首消息的等待时间(秒)
+  float channel_busy_ratio = 8;          // 8. 信道拥堵率 (0.0 to 1.0)
 }
 
 // 定义 Step 函数返回的单个智能体的完整结果
