@@ -56,10 +56,6 @@ type Aircraft struct {
 	outboundMutex sync.RWMutex
 	ackWaiters    sync.Map
 
-	// [新增] 用于解耦消息生产和消费的Channel
-	messageInput chan ACARSMessageInterface
-	stopChan     chan struct{}
-
 	// 统计数据
 	totalTxAttempts   uint64
 	totalCollisions   uint64
@@ -95,55 +91,27 @@ func NewAircraft(icaoAddr, reg, aircraftType, manufacturer, serialNum, airlineCo
 		outboundQueue:           make([]outboxItem, 0, 10),
 		ackWaiters:              sync.Map{},
 		waitTimes:               make([]time.Duration, 0, 100),
-		// [新增] 初始化channel
-		messageInput: make(chan ACARSMessageInterface, 100), // 使用带缓冲的channel
-		stopChan:     make(chan struct{}),
 	}
 	a.Reset()
 	return a
 }
 
-// [新增] Start 启动飞机的主循环goroutine
-func (a *Aircraft) Start() {
-	go a.run()
-}
-
-// [新增] Stop 停止飞机的主循环goroutine
-func (a *Aircraft) Stop() {
-	close(a.stopChan)
-}
-
-// [新增] run 是飞机的主循环，负责管理其内部状态，特别是outboundQueue
-func (a *Aircraft) run() {
-	log.Printf("✈️  [飞机 %s] 主循环已启动。", a.CurrentFlightID)
-	for {
-		select {
-		case msg := <-a.messageInput:
-			// 这是唯一一个可以写入outboundQueue的地方，因此不需要锁
-			a.outboundMutex.Lock()
-			item := outboxItem{
-				message:          msg,
-				enqueueTime:      time.Now(),
-				isRetransmission: false,
-			}
-			a.outboundQueue = append(a.outboundQueue, item)
-			sort.Slice(a.outboundQueue, func(i, j int) bool {
-				return a.outboundQueue[i].message.GetBaseMessage().Timestamp.Before(a.outboundQueue[j].message.GetBaseMessage().Timestamp)
-			})
-			log.Printf("📥 [飞机 %s] 新消息 (ID: %s) 已进入发送队列。当前队列长度: %d", a.CurrentFlightID, msg.GetBaseMessage().MessageID, len(a.outboundQueue))
-			a.outboundMutex.Unlock()
-
-		case <-a.stopChan:
-			log.Printf("✈️  [飞机 %s] 主循环已停止。", a.CurrentFlightID)
-			return
-		}
-	}
-}
-
-// [修改后] EnqueueMessage 不再直接操作队列，而是将消息发送到channel
+// EnqueueMessage 将一个新消息放入飞机的发件箱。
 func (a *Aircraft) EnqueueMessage(msg ACARSMessageInterface) {
-	// 这是一个非阻塞或短暂阻塞的操作，避免了与gRPC Step调用的锁竞争
-	a.messageInput <- msg
+	a.outboundMutex.Lock()
+	defer a.outboundMutex.Unlock()
+
+	item := outboxItem{
+		message:          msg,
+		enqueueTime:      time.Now(),
+		isRetransmission: false,
+	}
+	a.outboundQueue = append(a.outboundQueue, item)
+
+	sort.Slice(a.outboundQueue, func(i, j int) bool {
+		return a.outboundQueue[i].message.GetBaseMessage().Timestamp.Before(a.outboundQueue[j].message.GetBaseMessage().Timestamp)
+	})
+	log.Printf("📥 [飞机 %s] 新消息 (ID: %s) 已进入发送队列。当前队列长度: %d", a.CurrentFlightID, msg.GetBaseMessage().MessageID, len(a.outboundQueue))
 }
 
 // peekMessage 查看（不移除）队列头部的消息条目。
@@ -193,44 +161,62 @@ func (a *Aircraft) StartListening(comms *CommunicationSystem) {
 	}
 }
 
-// GetObservation 为 MARL 代理生成当前的观测状态
+// [核心修复] GetObservation - 最小化锁持有时间
 func (a *Aircraft) GetObservation(comms *CommunicationSystem) AgentObservation {
-	a.rlStateMutex.RLock()
-	defer a.rlStateMutex.RUnlock()
-	a.outboundMutex.RLock()
-	defer a.outboundMutex.RUnlock()
+	// --- 步骤1: 快速获取并释放锁，将需要的数据复制到局部变量 ---
+	var queueLen int
+	var topMsgEnqueueTime time.Time
+	var hasTopMsg bool
 
+	a.outboundMutex.RLock()
+	queueLen = len(a.outboundQueue)
+	if queueLen > 0 {
+		topMsgEnqueueTime = a.outboundQueue[0].enqueueTime
+		hasTopMsg = true
+	}
+	a.outboundMutex.RUnlock() // 立刻释放锁
+
+	var lastSendCollisionVal float32
+	var busyHistory []bool
+	var consIdleSteps, stepsSinceCollision int
+
+	a.rlStateMutex.RLock()
+	if a.lastSendCausedCollision {
+		lastSendCollisionVal = 1.0
+	}
+	// 复制slice以确保线程安全
+	busyHistory = make([]bool, len(a.channelBusyHistory))
+	copy(busyHistory, a.channelBusyHistory)
+	consIdleSteps = a.consecutiveIdleSteps
+	stepsSinceCollision = a.stepsSinceLastCollision
+	a.rlStateMutex.RUnlock() // 立刻释放锁
+
+	// --- 步骤2: 使用局部变量进行后续计算，不再持有任何锁 ---
 	isBusy := comms.PrimaryChannel.IsBusy()
 	isBusyVal := float32(0)
 	if isBusy {
 		isBusyVal = 1.0
 	}
 
-	queueLen := len(a.outboundQueue)
 	hasDataVal := float32(0)
 	if queueLen > 0 {
 		hasDataVal = 1.0
 	}
 
-	lastSendCollisionVal := float32(0)
-	if a.lastSendCausedCollision {
-		lastSendCollisionVal = 1.0
-	}
-
 	var busyRatio float32
-	if len(a.channelBusyHistory) > 0 {
+	if len(busyHistory) > 0 {
 		busyCount := 0
-		for _, busy := range a.channelBusyHistory {
+		for _, busy := range busyHistory {
 			if busy {
 				busyCount++
 			}
 		}
-		busyRatio = float32(busyCount) / float32(len(a.channelBusyHistory))
+		busyRatio = float32(busyCount) / float32(len(busyHistory))
 	}
 
 	var topMsgWaitTime float32
-	if topItem := a.peekMessage(); topItem != nil {
-		topMsgWaitTime = float32(time.Since(topItem.enqueueTime).Seconds())
+	if hasTopMsg {
+		topMsgWaitTime = float32(time.Since(topMsgEnqueueTime).Seconds())
 	}
 
 	return AgentObservation{
@@ -238,9 +224,9 @@ func (a *Aircraft) GetObservation(comms *CommunicationSystem) AgentObservation {
 		HasDataToSend:             hasDataVal,
 		OutboundQueueLength:       float32(queueLen),
 		TopMessageWaitTimeSeconds: topMsgWaitTime,
-		ConsecutiveIdleSteps:      float32(a.consecutiveIdleSteps),
+		ConsecutiveIdleSteps:      float32(consIdleSteps),
 		LastSendCausedCollision:   lastSendCollisionVal,
-		StepsSinceLastCollision:   float32(a.stepsSinceLastCollision),
+		StepsSinceLastCollision:   float32(stepsSinceCollision),
 		ChannelBusyRatio:          busyRatio,
 	}
 }
@@ -308,9 +294,9 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 		reward -= stepPenalty
 
 		const queuePenaltyFactor = 5.0
-		a.rlStateMutex.RLock()
+		a.outboundMutex.RLock()
 		QueuePenalty := queuePenaltyFactor * float32(len(a.outboundQueue))
-		a.rlStateMutex.RUnlock()
+		a.outboundMutex.RUnlock()
 		reward -= QueuePenalty
 
 		const waitTimeFactor = 2.0
@@ -404,10 +390,9 @@ func (a *Aircraft) Reset() {
 	a.waitTimes = make([]time.Duration, 0, 100)
 	a.waitTimesMutex.Unlock()
 
-	// [修改] 不再直接操作outboundQueue，run() goroutine会处理
-	// a.outboundMutex.Lock()
-	// a.outboundQueue = make([]outboxItem, 0, 10)
-	// a.outboundMutex.Unlock()
+	a.outboundMutex.Lock()
+	a.outboundQueue = make([]outboxItem, 0, 10)
+	a.outboundMutex.Unlock()
 
 	a.ackWaiters.Range(func(key, value interface{}) bool {
 		a.ackWaiters.Delete(key)
