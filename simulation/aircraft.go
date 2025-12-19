@@ -56,6 +56,10 @@ type Aircraft struct {
 	outboundMutex sync.RWMutex
 	ackWaiters    sync.Map
 
+	// [新增] 用于解耦消息生产和消费的Channel
+	messageInput chan ACARSMessageInterface
+	stopChan     chan struct{}
+
 	// 统计数据
 	totalTxAttempts   uint64
 	totalCollisions   uint64
@@ -91,27 +95,55 @@ func NewAircraft(icaoAddr, reg, aircraftType, manufacturer, serialNum, airlineCo
 		outboundQueue:           make([]outboxItem, 0, 10),
 		ackWaiters:              sync.Map{},
 		waitTimes:               make([]time.Duration, 0, 100),
+		// [新增] 初始化channel
+		messageInput: make(chan ACARSMessageInterface, 100), // 使用带缓冲的channel
+		stopChan:     make(chan struct{}),
 	}
 	a.Reset()
 	return a
 }
 
-// EnqueueMessage 将一个新消息放入飞机的发件箱。
-func (a *Aircraft) EnqueueMessage(msg ACARSMessageInterface) {
-	a.outboundMutex.Lock()
-	defer a.outboundMutex.Unlock()
+// [新增] Start 启动飞机的主循环goroutine
+func (a *Aircraft) Start() {
+	go a.run()
+}
 
-	item := outboxItem{
-		message:          msg,
-		enqueueTime:      time.Now(),
-		isRetransmission: false,
+// [新增] Stop 停止飞机的主循环goroutine
+func (a *Aircraft) Stop() {
+	close(a.stopChan)
+}
+
+// [新增] run 是飞机的主循环，负责管理其内部状态，特别是outboundQueue
+func (a *Aircraft) run() {
+	log.Printf("✈️  [飞机 %s] 主循环已启动。", a.CurrentFlightID)
+	for {
+		select {
+		case msg := <-a.messageInput:
+			// 这是唯一一个可以写入outboundQueue的地方，因此不需要锁
+			a.outboundMutex.Lock()
+			item := outboxItem{
+				message:          msg,
+				enqueueTime:      time.Now(),
+				isRetransmission: false,
+			}
+			a.outboundQueue = append(a.outboundQueue, item)
+			sort.Slice(a.outboundQueue, func(i, j int) bool {
+				return a.outboundQueue[i].message.GetBaseMessage().Timestamp.Before(a.outboundQueue[j].message.GetBaseMessage().Timestamp)
+			})
+			log.Printf("📥 [飞机 %s] 新消息 (ID: %s) 已进入发送队列。当前队列长度: %d", a.CurrentFlightID, msg.GetBaseMessage().MessageID, len(a.outboundQueue))
+			a.outboundMutex.Unlock()
+
+		case <-a.stopChan:
+			log.Printf("✈️  [飞机 %s] 主循环已停止。", a.CurrentFlightID)
+			return
+		}
 	}
-	a.outboundQueue = append(a.outboundQueue, item)
+}
 
-	sort.Slice(a.outboundQueue, func(i, j int) bool {
-		return a.outboundQueue[i].message.GetBaseMessage().Timestamp.Before(a.outboundQueue[j].message.GetBaseMessage().Timestamp)
-	})
-	log.Printf("📥 [飞机 %s] 新消息 (ID: %s) 已进入发送队列。当前队列长度: %d", a.CurrentFlightID, msg.GetBaseMessage().MessageID, len(a.outboundQueue))
+// [修改后] EnqueueMessage 不再直接操作队列，而是将消息发送到channel
+func (a *Aircraft) EnqueueMessage(msg ACARSMessageInterface) {
+	// 这是一个非阻塞或短暂阻塞的操作，避免了与gRPC Step调用的锁竞争
+	a.messageInput <- msg
 }
 
 // peekMessage 查看（不移除）队列头部的消息条目。
@@ -233,7 +265,6 @@ func (a *Aircraft) updateRLState(comms *CommunicationSystem) {
 
 	a.stepsSinceLastCollision++
 
-	// packetWaitingSteps 仍然在内部追踪，但不再作为观测状态
 	if a.peekMessage() != nil {
 		a.packetWaitingSteps++
 	} else {
@@ -373,9 +404,10 @@ func (a *Aircraft) Reset() {
 	a.waitTimes = make([]time.Duration, 0, 100)
 	a.waitTimesMutex.Unlock()
 
-	a.outboundMutex.Lock()
-	a.outboundQueue = make([]outboxItem, 0, 10)
-	a.outboundMutex.Unlock()
+	// [修改] 不再直接操作outboundQueue，run() goroutine会处理
+	// a.outboundMutex.Lock()
+	// a.outboundQueue = make([]outboxItem, 0, 10)
+	// a.outboundMutex.Unlock()
 
 	a.ackWaiters.Range(func(key, value interface{}) bool {
 		a.ackWaiters.Delete(key)
@@ -388,7 +420,7 @@ func (a *Aircraft) Reset() {
 	a.lastSendCausedCollision = false
 	a.channelBusyHistory = make([]bool, 0, sequenceLength)
 	a.consecutiveIdleSteps = 0
-	a.stepsSinceLastCollision = 1000000 // [核心修改] 初始化为一个大的值
+	a.stepsSinceLastCollision = 1000
 	a.packetWaitingSteps = 0
 }
 

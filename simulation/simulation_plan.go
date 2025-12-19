@@ -36,6 +36,17 @@ func RunSimulationSession(aircraftList []*Aircraft) {
 		flightPlans[i].Aircraft = aircraftList[i]
 	}
 
+	// [新增] 启动所有飞机的内部主循环
+	for _, ac := range aircraftList {
+		ac.Start()
+	}
+	// [新增] 确保在函数退出时停止所有飞机的主循环
+	defer func() {
+		for _, ac := range aircraftList {
+			ac.Stop()
+		}
+	}()
+
 	// 使用一个局部的 WaitGroup 来管理本次会话中所有飞行计划的生命周期。
 	var sessionWg sync.WaitGroup
 
