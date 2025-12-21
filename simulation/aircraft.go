@@ -236,7 +236,7 @@ func (a *Aircraft) updateRLState(comms *CommunicationSystem) {
 	a.rlStateMutex.Lock()
 	defer a.rlStateMutex.Unlock()
 
-	const sequenceLength = 1000
+	const sequenceLength = 50
 	isBusy := comms.PrimaryChannel.IsBusy()
 	if len(a.channelBusyHistory) >= sequenceLength {
 		a.channelBusyHistory = a.channelBusyHistory[1:]
@@ -401,11 +401,11 @@ func (a *Aircraft) Reset() {
 
 	a.rlStateMutex.Lock()
 	defer a.rlStateMutex.Unlock()
-	const sequenceLength = 1000
+	const sequenceLength = 50
 	a.lastSendCausedCollision = false
 	a.channelBusyHistory = make([]bool, 0, sequenceLength)
 	a.consecutiveIdleSteps = 0
-	a.stepsSinceLastCollision = 1000
+	a.stepsSinceLastCollision = 1680000
 	a.packetWaitingSteps = 0
 }
 
