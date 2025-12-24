@@ -13,17 +13,29 @@ enum Action {
   ACTION_SEND = 1; // 代表智能体尝试在主信道发送消息
 }
 
-// [重构后] 定义单个智能体的观测数据结构
-// 这将是神经网络的输入，所有维度都使用 float 类型以便于处理
+// [重构后] 定义单个智能体的12维观测数据结构
 message AgentObservation {
-  float is_channel_busy = 1;             // 1. 信道是否忙碌 (1.0 for busy, 0.0 for idle)
-  float has_data_to_send = 2;            // 2. 自身是否有数据待发送 (1.0 for yes, 0.0 for no)
-  float outbound_queue_length = 3;       // 3. 发件箱队列的长度
-  float top_message_wait_time_seconds = 4; // 4. 队首消息的等待时间(秒)
-  float consecutive_idle_steps = 5;      // 5. 连续空闲步数
-  float last_send_caused_collision = 6;  // 6. 上一次发送是否导致碰撞 (1.0 for collision, 0.0 for no)
-  float steps_since_last_collision = 7;  // 7. 距离上次碰撞的步数
-  float channel_busy_ratio = 8;          // 8. 信道拥堵率 (0.0 to 1.0)
+  // --- 核心状态 (Core Status) ---
+  float has_data = 1; // 1. 发件箱是否有消息待发 (1.0 for yes, 0.0 for no)
+  float is_busy = 2;  // 2. 当前信道是否被背景流量占用 (1.0 for yes, 0.0 for no)
+
+  // --- 信道节律 (Channel Rhythm) ---
+  float busy_dur = 3;  // 3. 连续忙碌的物理时间(秒), 归一化时超过1s的全部截断成1s
+  float idle_dur = 4;  // 4. 连续空闲的物理时间(秒), 归一化时超过1s的全部截断成1s
+  float ratio_1s = 5;  // 5. 过去 1.0s 内信道被占用的比例 (0.0 ~ 1.0)
+  float ratio_01s = 6; // 6. 过去 0.1s 内信道被占用的比例 (0.0 ~ 1.0)
+
+  // --- 问题紧迫性 (Urgency) ---
+  float wait_time = 7; // 7. 队首数据包已等待的物理时间, 归一化时超过5s全部截断成5s
+  float q_size = 8;    // 8. 当前待发送队列长度, 归一化时超过5的全截断成5
+
+  // --- 自我行为反思 (Self-Reflection) ---
+  float last_act = 9;  // 9. 上一回合执行的动作 (0 for Wait, 1 for Send)
+  float is_coll = 10;  // 10. 本次决策过程是否触发了碰撞锁定 (1.0 for yes, 0.0 for no)
+
+  // --- 全局与系统上下文 (Global & System Context) ---
+  float cycle_pos = 11; // 11. 全局时钟, 模拟器启动后的秒数对360s取模, 再归一化
+  float dt_step = 12;   // 12. 距离上次决策的物理时间(秒), 归一化时用0.5s为最大值
 }
 
 // 定义 Step 函数返回的单个智能体的完整结果

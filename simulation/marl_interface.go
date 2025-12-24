@@ -12,12 +12,25 @@ const (
 
 // AgentObservation 定义了强化学习代理的观测状态
 type AgentObservation struct {
-	IsChannelBusy             float32 `json:"is_channel_busy"`               // 1. 信道是否忙碌
-	HasDataToSend             float32 `json:"has_data_to_send"`              // 2. 自身是否有数据待发送
-	OutboundQueueLength       float32 `json:"outbound_queue_length"`         // 3. 发件箱队列的长度
-	TopMessageWaitTimeSeconds float32 `json:"top_message_wait_time_seconds"` // 4. 队首消息的等待时间(秒)
-	ConsecutiveIdleSteps      float32 `json:"consecutive_idle_steps"`        // 5. 连续空闲步数
-	LastSendCausedCollision   float32 `json:"last_send_caused_collision"`    // 6. 上一次发送是否导致碰撞
-	StepsSinceLastCollision   float32 `json:"steps_since_last_collision"`    // 7. 距离上次碰撞的步数
-	ChannelBusyRatio          float32 `json:"channel_busy_ratio"`            // 8. 信道拥堵率
+	// --- 核心状态 (Core Status) ---
+	HasData float32 `json:"has_data"` // 1. 发件箱是否有消息待发 (1.0 for yes, 0.0 for no)
+	IsBusy  float32 `json:"is_busy"`  // 2. 当前信道是否被背景流量占用 (1.0 for yes, 0.0 for no)
+
+	// --- 信道节律 (Channel Rhythm) ---
+	BusyDur  float32 `json:"busy_dur"`  // 3. 连续忙碌的物理时间(秒), 归一化时超过1s的全部截断成1s
+	IdleDur  float32 `json:"idle_dur"`  // 4. 连续空闲的物理时间(秒), 归一化时超过1s的全部截断成1s
+	Ratio1s  float32 `json:"ratio_1s"`  // 5. 过去 1.0s 内信道被占用的比例 (0.0 ~ 1.0)
+	Ratio01s float32 `json:"ratio_01s"` // 6. 过去 0.1s 内信道被占用的比例 (0.0 ~ 1.0)
+
+	// --- 问题紧迫性 (Urgency) ---
+	WaitTime float32 `json:"wait_time"` // 7. 队首数据包已等待的物理时间, 归一化时超过5s全部截断成5s
+	QSize    float32 `json:"q_size"`    // 8. 当前待发送队列长度, 归一化时超过5的全截断成5
+
+	// --- 自我行为反思 (Self-Reflection) ---
+	LastAct float32 `json:"last_act"` // 9. 上一回合执行的动作 (0 for Wait, 1 for Send)
+	IsColl  float32 `json:"is_coll"`  // 10. 本次决策过程是否触发了碰撞锁定 (1.0 for yes, 0.0 for no)
+
+	// --- 全局与系统上下文 (Global & System Context) ---
+	CyclePos float32 `json:"cycle_pos"` // 11. 全局时钟, 模拟器启动后的秒数对360s取模, 再归一化
+	DtStep   float32 `json:"dt_step"`   // 12. 距离上次决策的物理时间(秒), 归一化时用0.5s为最大值
 }

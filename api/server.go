@@ -8,12 +8,13 @@ import (
 	"context"
 	"log"
 	"sync/atomic"
+	"time"
 )
 
 // agent 接口定义了智能体的行为。
 type agent interface {
 	Step(action simulation.AgentAction, comms *simulation.CommunicationSystem) float32
-	GetObservation(comms *simulation.CommunicationSystem) simulation.AgentObservation
+	GetObservation(comms *simulation.CommunicationSystem, simStartTime time.Time) simulation.AgentObservation
 	Reset()
 }
 
@@ -27,8 +28,9 @@ type Server struct {
 	dataCollector    *collector.DataCollector
 	trafficGenerator *simulation.TrafficGenerator
 
-	simulationRunning atomic.Bool
-	episodeCounter    atomic.Int64
+	simulationRunning   atomic.Bool
+	episodeCounter      atomic.Int64
+	simulationStartTime time.Time // [新增] 记录模拟开始时间
 }
 
 // NewServer 是 Server 的构造函数。
@@ -57,7 +59,7 @@ func NewServer(
 func (s *Server) Step(ctx context.Context, req *proto.StepRequest) (*proto.StepResponse, error) {
 	simAction := simulation.AgentAction(req.Action)
 	reward := s.aircraftAgent.Step(simAction, s.commsSystem)
-	obs := s.aircraftAgent.GetObservation(s.commsSystem)
+	obs := s.aircraftAgent.GetObservation(s.commsSystem, s.simulationStartTime) // [修改] 传递开始时间
 	isDone := !s.simulationRunning.Load() && s.episodeCounter.Load() > 0
 
 	state := &proto.AgentState{
@@ -74,6 +76,7 @@ func (s *Server) Reset(ctx context.Context, req *proto.ResetRequest) (*proto.Res
 	currentEpisode := s.episodeCounter.Add(1)
 	log.Printf("🔄 [Episode %d] 收到 Reset 请求，正在重置并启动新一轮模拟...", currentEpisode)
 
+	s.simulationStartTime = time.Now() // [修改] 记录新的模拟开始时间
 	s.trafficGenerator.Reset()
 	s.aircraftAgent.Reset()
 	s.commsSystem.PrimaryChannel.ResetStats()
@@ -90,7 +93,7 @@ func (s *Server) Reset(ctx context.Context, req *proto.ResetRequest) (*proto.Res
 		log.Printf("✅ [Episode %d] 飞行计划模拟已在后台完成。", currentEpisode)
 	}()
 
-	obs := s.aircraftAgent.GetObservation(s.commsSystem)
+	obs := s.aircraftAgent.GetObservation(s.commsSystem, s.simulationStartTime) // [修改] 传递开始时间
 	initialState := &proto.AgentState{
 		Observation: mapObservationToProto(obs),
 		Reward:      0.0,
@@ -100,17 +103,21 @@ func (s *Server) Reset(ctx context.Context, req *proto.ResetRequest) (*proto.Res
 	return &proto.ResetResponse{State: initialState}, nil
 }
 
-// mapObservationToProto 辅助函数
-// 将 simulation 层的观测状态映射到 proto 层的消息结构。
+// [核心重构] mapObservationToProto 辅助函数
+// 将12维的 simulation 层观测状态映射到12维的 proto 层消息结构。
 func mapObservationToProto(obs simulation.AgentObservation) *proto.AgentObservation {
 	return &proto.AgentObservation{
-		IsChannelBusy:             obs.IsChannelBusy,
-		HasDataToSend:             obs.HasDataToSend,
-		OutboundQueueLength:       obs.OutboundQueueLength,
-		TopMessageWaitTimeSeconds: obs.TopMessageWaitTimeSeconds,
-		ConsecutiveIdleSteps:      obs.ConsecutiveIdleSteps,
-		LastSendCausedCollision:   obs.LastSendCausedCollision,
-		StepsSinceLastCollision:   obs.StepsSinceLastCollision,
-		ChannelBusyRatio:          obs.ChannelBusyRatio,
+		HasData:   obs.HasData,
+		IsBusy:    obs.IsBusy,
+		BusyDur:   obs.BusyDur,
+		IdleDur:   obs.IdleDur,
+		Ratio_1S:  obs.Ratio1s,
+		Ratio_01S: obs.Ratio01s,
+		WaitTime:  obs.WaitTime,
+		QSize:     obs.QSize,
+		LastAct:   obs.LastAct,
+		IsColl:    obs.IsColl,
+		CyclePos:  obs.CyclePos,
+		DtStep:    obs.DtStep,
 	}
 }

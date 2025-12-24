@@ -12,6 +12,12 @@ import (
 	"time"
 )
 
+// channelStateEvent is used to record the history of channel states for ratio calculations.
+type channelStateEvent struct {
+	timestamp time.Time
+	isBusy    bool
+}
+
 // ackWaiter 结构体，存储等待ACK的报文信息
 type ackWaiter struct {
 	message     ACARSMessageInterface
@@ -68,12 +74,13 @@ type Aircraft struct {
 	waitTimesMutex    sync.Mutex
 
 	// --- 强化学习状态追踪 ---
-	lastSendCausedCollision bool   // 状态6
-	channelBusyHistory      []bool // 状态8
-	consecutiveIdleSteps    int    // 状态5
-	stepsSinceLastCollision int    // 状态7
-	packetWaitingSteps      int    // 内部追踪，不再是观测状态
-	rlStateMutex            sync.RWMutex
+	lastAction          AgentAction         // 9. last_act
+	lastStepTime        time.Time           // 12. dt_step
+	lastStateChangeTime time.Time           // 3, 4. busy_dur, idle_dur
+	isCurrentlyBusy     bool                // 3, 4. busy_dur, idle_dur
+	channelStateHistory []channelStateEvent // 5, 6. ratio_1s, ratio_01s
+	lastCollision       bool                // 10. is_coll
+	rlStateMutex        sync.RWMutex
 }
 
 // NewAircraft 创建一个航空器实例的构造函数
@@ -161,74 +168,162 @@ func (a *Aircraft) StartListening(comms *CommunicationSystem) {
 	}
 }
 
-// [核心修复] GetObservation - 最小化锁持有时间
-func (a *Aircraft) GetObservation(comms *CommunicationSystem) AgentObservation {
-	// --- 步骤1: 快速获取并释放锁，将需要的数据复制到局部变量 ---
-	var queueLen int
-	var topMsgEnqueueTime time.Time
-	var hasTopMsg bool
+// [核心重构] GetObservation - 计算并返回12维观测状态
+func (a *Aircraft) GetObservation(comms *CommunicationSystem, simStartTime time.Time) AgentObservation {
+	now := time.Now()
 
+	// --- 快速获取并释放锁，将需要的数据复制到局部变量 ---
 	a.outboundMutex.RLock()
-	queueLen = len(a.outboundQueue)
+	queueLen := len(a.outboundQueue)
+	var topMsgEnqueueTime time.Time
 	if queueLen > 0 {
 		topMsgEnqueueTime = a.outboundQueue[0].enqueueTime
-		hasTopMsg = true
 	}
-	a.outboundMutex.RUnlock() // 立刻释放锁
-
-	var lastSendCollisionVal float32
-	var busyHistory []bool
-	var consIdleSteps, stepsSinceCollision int
+	a.outboundMutex.RUnlock()
 
 	a.rlStateMutex.RLock()
-	if a.lastSendCausedCollision {
-		lastSendCollisionVal = 1.0
+	lastAct := a.lastAction
+	isColl := a.lastCollision
+	dtStep := float32(now.Sub(a.lastStepTime).Seconds())
+	busyDur := float32(0)
+	idleDur := float32(0)
+	if a.isCurrentlyBusy {
+		busyDur = float32(now.Sub(a.lastStateChangeTime).Seconds())
+	} else {
+		idleDur = float32(now.Sub(a.lastStateChangeTime).Seconds())
 	}
-	// 复制slice以确保线程安全
-	busyHistory = make([]bool, len(a.channelBusyHistory))
-	copy(busyHistory, a.channelBusyHistory)
-	consIdleSteps = a.consecutiveIdleSteps
-	stepsSinceCollision = a.stepsSinceLastCollision
-	a.rlStateMutex.RUnlock() // 立刻释放锁
+	history := make([]channelStateEvent, len(a.channelStateHistory))
+	copy(history, a.channelStateHistory)
+	a.rlStateMutex.RUnlock()
 
-	// --- 步骤2: 使用局部变量进行后续计算，不再持有任何锁 ---
-	isBusy := comms.PrimaryChannel.IsBusy()
-	isBusyVal := float32(0)
-	if isBusy {
-		isBusyVal = 1.0
-	}
+	// --- 使用局部变量进行后续计算 ---
 
-	hasDataVal := float32(0)
+	// 1. has_data
+	hasData := float32(0)
 	if queueLen > 0 {
-		hasDataVal = 1.0
+		hasData = 1.0
 	}
 
-	var busyRatio float32
-	if len(busyHistory) > 0 {
-		busyCount := 0
-		for _, busy := range busyHistory {
-			if busy {
-				busyCount++
-			}
-		}
-		busyRatio = float32(busyCount) / float32(len(busyHistory))
+	// 2. is_busy
+	isBusy := float32(0)
+	if comms.PrimaryChannel.IsBusy() {
+		isBusy = 1.0
 	}
 
-	var topMsgWaitTime float32
-	if hasTopMsg {
-		topMsgWaitTime = float32(time.Since(topMsgEnqueueTime).Seconds())
+	// 3. busy_dur (归一化)
+	if busyDur > 1.0 {
+		busyDur = 1.0
 	}
+
+	// 4. idle_dur (归一化)
+	if idleDur > 1.0 {
+		idleDur = 1.0
+	}
+
+	// 5. ratio_1s & 6. ratio_01s
+	ratio1s := calculateBusyRatio(history, now, 1*time.Second)
+	ratio01s := calculateBusyRatio(history, now, 100*time.Millisecond)
+
+	// 7. wait_time (归一化)
+	waitTime := float32(0)
+	if queueLen > 0 {
+		waitTime = float32(now.Sub(topMsgEnqueueTime).Seconds())
+	}
+	if waitTime > 5.0 {
+		waitTime = 5.0
+	}
+
+	// 8. q_size (归一化)
+	qSize := float32(queueLen)
+	if qSize > 5.0 {
+		qSize = 5.0
+	}
+
+	// 9. last_act
+	lastActFloat := float32(lastAct)
+
+	// 10. is_coll
+	isCollFloat := float32(0)
+	if isColl {
+		isCollFloat = 1.0
+	}
+
+	// 11. cycle_pos (归一化)
+	cyclePos := float32(math.Mod(now.Sub(simStartTime).Seconds(), 360.0) / 360.0)
+
+	// 12. dt_step (归一化)
+	if dtStep > 0.5 {
+		dtStep = 0.5
+	}
+	dtStep /= 0.5
 
 	return AgentObservation{
-		IsChannelBusy:             isBusyVal,
-		HasDataToSend:             hasDataVal,
-		OutboundQueueLength:       float32(queueLen),
-		TopMessageWaitTimeSeconds: topMsgWaitTime,
-		ConsecutiveIdleSteps:      float32(consIdleSteps),
-		LastSendCausedCollision:   lastSendCollisionVal,
-		StepsSinceLastCollision:   float32(stepsSinceCollision),
-		ChannelBusyRatio:          busyRatio,
+		HasData:  hasData,
+		IsBusy:   isBusy,
+		BusyDur:  busyDur,
+		IdleDur:  idleDur,
+		Ratio1s:  ratio1s,
+		Ratio01s: ratio01s,
+		WaitTime: waitTime,
+		QSize:    qSize,
+		LastAct:  lastActFloat,
+		IsColl:   isCollFloat,
+		CyclePos: cyclePos,
+		DtStep:   dtStep,
 	}
+}
+
+// calculateBusyRatio is a helper to compute the busy ratio over a given duration.
+func calculateBusyRatio(history []channelStateEvent, now time.Time, duration time.Duration) float32 {
+	if len(history) == 0 {
+		return 0
+	}
+
+	startTime := now.Add(-duration)
+	var busyTime time.Duration
+
+	// Find the starting point in history
+	firstRelevantIndex := -1
+	for i, event := range history {
+		if event.timestamp.After(startTime) {
+			firstRelevantIndex = i
+			break
+		}
+	}
+
+	if firstRelevantIndex == -1 { // All history is older than the duration
+		if history[len(history)-1].isBusy {
+			return 1.0
+		}
+		return 0.0
+	}
+
+	// Calculate busy time from the relevant history portion
+	relevantHistory := history[firstRelevantIndex:]
+
+	// Handle the time between startTime and the first relevant event
+	prevEventIndex := firstRelevantIndex - 1
+	if prevEventIndex >= 0 && history[prevEventIndex].isBusy {
+		busyTime += relevantHistory[0].timestamp.Sub(startTime)
+	}
+
+	for i := 0; i < len(relevantHistory)-1; i++ {
+		if relevantHistory[i].isBusy {
+			busyTime += relevantHistory[i+1].timestamp.Sub(relevantHistory[i].timestamp)
+		}
+	}
+
+	// Handle the last event up to 'now'
+	lastEvent := relevantHistory[len(relevantHistory)-1]
+	if lastEvent.isBusy {
+		busyTime += now.Sub(lastEvent.timestamp)
+	}
+
+	ratio := float64(busyTime) / float64(duration)
+	if ratio > 1.0 {
+		return 1.0
+	}
+	return float32(ratio)
 }
 
 // updateRLState 在每个 Step 开始时更新状态
@@ -236,26 +331,31 @@ func (a *Aircraft) updateRLState(comms *CommunicationSystem) {
 	a.rlStateMutex.Lock()
 	defer a.rlStateMutex.Unlock()
 
-	const sequenceLength = 50
+	now := time.Now()
 	isBusy := comms.PrimaryChannel.IsBusy()
-	if len(a.channelBusyHistory) >= sequenceLength {
-		a.channelBusyHistory = a.channelBusyHistory[1:]
-	}
-	a.channelBusyHistory = append(a.channelBusyHistory, isBusy)
 
-	if !isBusy {
-		a.consecutiveIdleSteps++
-	} else {
-		a.consecutiveIdleSteps = 0
+	// Update channel state history and durations
+	if isBusy != a.isCurrentlyBusy {
+		a.lastStateChangeTime = now
+		a.isCurrentlyBusy = isBusy
 	}
 
-	a.stepsSinceLastCollision++
-
-	if a.peekMessage() != nil {
-		a.packetWaitingSteps++
-	} else {
-		a.packetWaitingSteps = 0
+	// Prune history to keep it manageable (e.g., last 2 seconds)
+	twoSecondsAgo := now.Add(-2 * time.Second)
+	pruneIndex := 0
+	for i, event := range a.channelStateHistory {
+		if event.timestamp.After(twoSecondsAgo) {
+			pruneIndex = i
+			break
+		}
 	}
+	if pruneIndex > 0 {
+		a.channelStateHistory = a.channelStateHistory[pruneIndex:]
+	}
+	a.channelStateHistory = append(a.channelStateHistory, channelStateEvent{timestamp: now, isBusy: isBusy})
+
+	// Update dt_step
+	a.lastStepTime = now
 }
 
 // Step 函数: 执行一步决策并返回奖励
@@ -265,10 +365,11 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 	reward := float32(0)
 	itemToSend := a.peekMessage()
 
+	a.rlStateMutex.Lock()
+	a.lastAction = action
+	a.rlStateMutex.Unlock()
+
 	if itemToSend == nil {
-		a.rlStateMutex.Lock()
-		a.lastSendCausedCollision = false
-		a.rlStateMutex.Unlock()
 		if action == ActionSend {
 			reward -= 10.0
 		} else {
@@ -283,15 +384,12 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 			reward -= 0.5
 			break
 		}
-		a.rlStateMutex.Lock()
-		a.lastSendCausedCollision = false
-		a.rlStateMutex.Unlock()
 
 		const stepPenaltyFactor = 0.01
 		a.rlStateMutex.RLock()
-		stepPenalty := stepPenaltyFactor * float32(a.packetWaitingSteps)
+		// stepPenalty := stepPenaltyFactor * float32(a.packetWaitingSteps) // This tracker is removed
 		a.rlStateMutex.RUnlock()
-		reward -= stepPenalty
+		// reward -= stepPenalty
 
 		const queuePenaltyFactor = 5.0
 		a.outboundMutex.RLock()
@@ -317,11 +415,12 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 	atomic.AddUint64(&a.totalRqTunnel, 1)
 	time.Sleep(time.Duration(10+rand.Intn(41)) * time.Microsecond)
 
+	a.rlStateMutex.Lock()
+	a.lastCollision = false // Reset collision flag at every send attempt
+	a.rlStateMutex.Unlock()
+
 	if channel.IsBusy() {
 		atomic.AddUint64(&a.totalFailRqTunnel, 1)
-		a.rlStateMutex.Lock()
-		a.lastSendCausedCollision = false
-		a.rlStateMutex.Unlock()
 		return -0.5
 	}
 
@@ -345,11 +444,6 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 		}
 		a.ackWaiters.Store(msg.GetBaseMessage().MessageID, waiter)
 
-		a.rlStateMutex.Lock()
-		a.lastSendCausedCollision = false
-		a.packetWaitingSteps = 0
-		a.rlStateMutex.Unlock()
-
 		waitTimeSeconds := waitTime.Seconds()
 		optimalTime := 0.4
 		var reward float64
@@ -368,8 +462,7 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 		log.Printf("💥 [飞机 %s] 发送报文 (ID: %s) 时失败(碰撞)。", a.CurrentFlightID, msg.GetBaseMessage().MessageID)
 
 		a.rlStateMutex.Lock()
-		a.lastSendCausedCollision = true
-		a.stepsSinceLastCollision = 0
+		a.lastCollision = true
 		a.rlStateMutex.Unlock()
 
 		return -30.0
@@ -401,12 +494,13 @@ func (a *Aircraft) Reset() {
 
 	a.rlStateMutex.Lock()
 	defer a.rlStateMutex.Unlock()
-	const sequenceLength = 50
-	a.lastSendCausedCollision = false
-	a.channelBusyHistory = make([]bool, 0, sequenceLength)
-	a.consecutiveIdleSteps = 0
-	a.stepsSinceLastCollision = 1680000
-	a.packetWaitingSteps = 0
+	now := time.Now()
+	a.lastAction = ActionWait // Default action
+	a.lastStepTime = now
+	a.lastStateChangeTime = now
+	a.isCurrentlyBusy = false                                 // Assume channel is initially idle
+	a.channelStateHistory = make([]channelStateEvent, 0, 100) // Approx 2s of history at high freq
+	a.lastCollision = false
 }
 
 // GetWaitTimes 返回一个线程安全的等待时间副本
