@@ -385,23 +385,27 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 			break
 		}
 
-		const stepPenaltyFactor = 0.01
-		a.rlStateMutex.RLock()
-		// stepPenalty := stepPenaltyFactor * float32(a.packetWaitingSteps) // This tracker is removed
-		a.rlStateMutex.RUnlock()
-		// reward -= stepPenalty
-
-		const queuePenaltyFactor = 5.0
+		const queuePenaltyFactor = 2.0 // 稍微调低系数
 		a.outboundMutex.RLock()
-		QueuePenalty := queuePenaltyFactor * float32(len(a.outboundQueue))
+		queueLen := float32(len(a.outboundQueue))
 		a.outboundMutex.RUnlock()
+		// 使用 log 处理：当队列很长时，惩罚不再线性爆炸
+		// log1p(x) = ln(1+x)，即便队列 1000 个包，惩罚也就 7 左右
+		QueuePenalty := queuePenaltyFactor * float32(math.Log1p(float64(queueLen)))
 		reward -= QueuePenalty
 
-		const waitTimeFactor = 2.0
-		waitTimePenalty := waitTimeFactor * float32(time.Since(itemToSend.enqueueTime).Seconds())
+		// 2. 等待时间惩罚：设置上限（Clipping）
+		const waitTimeFactor = 1.0
+		// 限制单步等待惩罚的最大值，防止某个“僵尸包”拖垮整个 Episode
+		secondsWaiting := float32(time.Since(itemToSend.enqueueTime).Seconds())
+		if secondsWaiting > 5.0 {
+			secondsWaiting = 5.0
+		} // 封顶 5 秒
+		waitTimePenalty := waitTimeFactor * secondsWaiting
 		reward -= waitTimePenalty
 
-		const basePenalty = 20.0
+		// 3. 基础惩罚：保持现状或略微调低
+		const basePenalty = 5.0 // 20 稍微有点重，可以试试 5-10
 		reward -= basePenalty
 
 	case ActionSend:
