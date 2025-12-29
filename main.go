@@ -7,6 +7,7 @@ import (
 	"Air-Simulator/config" // 导入新的 config 包
 	"Air-Simulator/proto"
 	"Air-Simulator/simulation"
+	"flag" // [新增] 导入 flag 包
 	"fmt"
 	"log"
 	"net"
@@ -15,6 +16,11 @@ import (
 )
 
 func main() {
+	// --- [新增] 定义命令行flag来指定端口 ---
+	// 定义一个名为 "port" 的 flag，默认值为 "50051"，并提供描述信息
+	port := flag.String("port", "50051", "gRPC server port")
+	flag.Parse() // 解析命令行参数
+
 	log.Println("=============================================")
 	log.Println("======  Air-Ground Communication Simulation  ======")
 	log.Println("======         (MARL Environment Mode)         ======")
@@ -65,27 +71,24 @@ func main() {
 	dataCollector := collector.NewDataCollector(aircraftList, channelsToMonitor, groundStationsToMonitor)
 	log.Println("📊 数据收集器已准备就绪。")
 
-	// --- 5. 启动 gRPC 服务器并阻塞主线程，使其永不退出 ---
-	lis, err := net.Listen("tcp", ":50051") // 监听 50051 端口
+	// --- 5. 启动 gRPC 服务器并阻塞主线程 ---
+	listenAddress := fmt.Sprintf(":%s", *port) // [修改] 使用flag的值来构建监听地址
+	lis, err := net.Listen("tcp", listenAddress)
 	if err != nil {
-		log.Fatalf("❌ 无法监听端口: %v", err)
+		log.Fatalf("❌ 无法监听端口 %s: %v", *port, err)
 	}
-	log.Println("🚀 gRPC 服务器正在监听 :50051, 等待 Python 客户端连接...")
+	log.Printf("🚀 gRPC 服务器正在监听 %s, 等待 Python 客户端连接...", listenAddress)
 
 	grpcServer := grpc.NewServer()
 
-	// 创建 API 服务器实例，并传入所有需要的模拟组件，包括流量生成器
+	// 创建 API 服务器实例，并传入所有需要的模拟组件
 	apiServer := api.NewServer(commsSystem, aircraftList, dataCollector, trafficGenerator)
 
 	// 注册服务
 	proto.RegisterSimulatorServer(grpcServer, apiServer)
 
-	// 启动服务。这会阻塞 main goroutine，使程序持续运行。
+	// 启动服务
 	if err := grpcServer.Serve(lis); err != nil {
 		log.Fatalf("❌ gRPC 服务器启动失败: %v", err)
 	}
-
-	// 程序现在会一直运行在这里，直到你手动停止它 (e.g., Ctrl+C)
-	// 注意：由于 grpcServer.Serve 会阻塞，trafficGenerator.Stop() 不会被直接调用。
-	// 在实际应用中，可能需要一个更优雅的关闭机制，例如监听 OS 信号。
 }
