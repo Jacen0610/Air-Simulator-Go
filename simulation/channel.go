@@ -62,23 +62,6 @@ func (c *Channel) ForceTransmit(msg ACARSMessageInterface, senderID string) {
 	}
 }
 
-func (c *Channel) UpdatePValues(newPMap map[config.Priority]float64) {
-	c.pValuesMutex.Lock()
-	defer c.pValuesMutex.Unlock()
-	c.pValues = newPMap
-	log.Printf("🔄 信道 [%s] 的 p-map 已更新。", c.ID)
-}
-
-// GetPForMessage 为给定的优先级获取当前的 p-value。
-func (c *Channel) GetPForMessage(priority config.Priority) float64 {
-	c.pValuesMutex.RLock()
-	defer c.pValuesMutex.RUnlock()
-	if p, ok := c.pValues[config.Priority(priority)]; ok {
-		return p
-	}
-	return 0.1 // 返回一个安全的默认值
-}
-
 // UpdateCurrentTimeSlot 允许动态更新时隙。
 func (c *Channel) UpdateCurrentTimeSlot(newTimeSlot time.Duration) {
 	c.timeSlotMutex.Lock()

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"log"
 	"math"
-	"math/rand"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -417,7 +416,8 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 // attemptSendOnChannel 尝试在指定信道上发送消息
 func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) float32 {
 	atomic.AddUint64(&a.totalRqTunnel, 1)
-	time.Sleep(time.Duration(10+rand.Intn(41)) * time.Microsecond)
+	// [修改] 使用全局可控的随机数生成器
+	time.Sleep(time.Duration(10+config.GetSimRand().Intn(41)) * time.Microsecond)
 
 	a.rlStateMutex.Lock()
 	a.lastCollision = false // Reset collision flag at every send attempt

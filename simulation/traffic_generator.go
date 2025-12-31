@@ -4,7 +4,6 @@ import (
 	"Air-Simulator/config"
 	"fmt"
 	"log"
-	"math/rand"
 	"sync"
 	"time"
 )
@@ -133,7 +132,8 @@ func (g *TrafficGenerator) setTickerForCurrentMode(ticker **time.Ticker) {
 		jitterRange = 2 * time.Second // 间隔在 3s ~ 5s
 	}
 
-	randomJitter := time.Duration(rand.Int63n(int64(jitterRange)))
+	// [修改] 使用全局可控的随机数生成器
+	randomJitter := time.Duration(config.GetSimRand().Int63n(int64(jitterRange)))
 	interval := baseInterval + randomJitter
 
 	*ticker = time.NewTicker(interval)
@@ -172,7 +172,7 @@ func (g *TrafficGenerator) generateBackgroundMessage() ACARSMessageInterface {
 	return msg
 }
 
-// attemptSendCSMA 使用 P-坚持 CSMA 算法发送消息 (代码无变化)
+// attemptSendCSMA 使用 P-坚持 CSMA 算法发送消息
 func (g *TrafficGenerator) attemptSendCSMA() {
 	g.queueMutex.Lock()
 	defer g.queueMutex.Unlock()
@@ -188,8 +188,9 @@ func (g *TrafficGenerator) attemptSendCSMA() {
 		return
 	}
 
-	if rand.Float64() < p {
-		time.Sleep(time.Duration(10+rand.Intn(41)) * time.Microsecond)
+	// [修改] 使用全局可控的随机数生成器
+	if config.GetSimRand().Float64() < p {
+		time.Sleep(time.Duration(10+config.GetSimRand().Intn(41)) * time.Microsecond)
 		transmitted := g.commsSystem.PrimaryChannel.AttemptTransmit(msg, g.ID, 200*time.Millisecond)
 		if transmitted {
 			g.messageQueue = g.messageQueue[1:]
