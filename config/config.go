@@ -13,7 +13,7 @@ const (
 	// UseFixedSeed 控制是否使用固定的随机种子。
 	// true: 使用下面的 RandomSeed 值，使得每次运行的随机事件序列完全相同，便于调试和模型评估。
 	// false: 使用当前时间作为种子，使得每次运行都具有不同的随机性。
-	UseFixedSeed = true
+	UseFixedSeed = false
 
 	// RandomSeed 是一个预设的种子值。仅在 UseFixedSeed 为 true 时生效。
 	RandomSeed int64 = 42
