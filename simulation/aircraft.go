@@ -380,32 +380,31 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 	switch action {
 	case ActionWait:
 		if comms.PrimaryChannel.IsBusy() {
-			reward -= 0.5
+			reward += 0.25
 			break
 		}
 
-		const queuePenaltyFactor = 2.0 // 稍微调低系数
+		const queuePenaltyFactor = 2.0
 		a.outboundMutex.RLock()
 		queueLen := float32(len(a.outboundQueue))
 		a.outboundMutex.RUnlock()
-		// 使用 log 处理：当队列很长时，惩罚不再线性爆炸
-		// log1p(x) = ln(1+x)，即便队列 1000 个包，惩罚也就 7 左右
 		QueuePenalty := queuePenaltyFactor * float32(math.Log1p(float64(queueLen)))
 		reward -= QueuePenalty
 
-		// 2. 等待时间惩罚：设置上限（Clipping）
+		// 2. 等待时间惩罚：【核心修改】取消封顶，引入指数/幂次增长
 		const waitTimeFactor = 1.0
-		// 限制单步等待惩罚的最大值，防止某个“僵尸包”拖垮整个 Episode
 		secondsWaiting := float32(time.Since(itemToSend.enqueueTime).Seconds())
-		if secondsWaiting > 5.0 {
-			secondsWaiting = 5.0
-		} // 封顶 5 秒
-		waitTimePenalty := waitTimeFactor * secondsWaiting
-		reward -= waitTimePenalty
 
-		// 3. 基础惩罚：保持现状或略微调低
-		const basePenalty = 5.0 // 20 稍微有点重，可以试试 5-10
-		reward -= basePenalty
+		var waitTimePenalty float32
+		if secondsWaiting <= 5.0 {
+			// 5秒内保持线性，给 Agent 一个正常的启动缓冲
+			waitTimePenalty = waitTimeFactor * secondsWaiting
+		} else {
+			// 【关键】5秒后惩罚开始“加速”，使用 1.2 次幂
+			// 这样 30s 时的惩罚将远大于 5s，逼迫 Agent 必须在此时寻找时隙发出
+			waitTimePenalty = waitTimeFactor * (5.0 + float32(math.Pow(float64(secondsWaiting-5.0), 1.2)))
+		}
+		reward -= waitTimePenalty
 
 	case ActionSend:
 		reward += a.attemptSendOnChannel(itemToSend, comms.PrimaryChannel)
@@ -425,7 +424,7 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 
 	if channel.IsBusy() {
 		atomic.AddUint64(&a.totalFailRqTunnel, 1)
-		return -0.5
+		return -2
 	}
 
 	atomic.AddUint64(&a.totalTxAttempts, 1)
