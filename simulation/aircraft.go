@@ -380,8 +380,7 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 	switch action {
 	case ActionWait:
 		if comms.PrimaryChannel.IsBusy() {
-			reward += 0.25
-			break
+			reward += 0.1
 		}
 
 		const queuePenaltyFactor = 2.0
