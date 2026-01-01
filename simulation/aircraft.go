@@ -467,7 +467,7 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 		a.lastCollision = true
 		a.rlStateMutex.Unlock()
 
-		return -30.0
+		return -15.0
 	}
 }
 
