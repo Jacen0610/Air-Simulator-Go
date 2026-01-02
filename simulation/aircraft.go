@@ -421,10 +421,10 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 	a.lastCollision = false // Reset collision flag at every send attempt
 	a.rlStateMutex.Unlock()
 
-	//if channel.IsBusy() {
-	//	atomic.AddUint64(&a.totalFailRqTunnel, 1)
-	//	return -2
-	//}
+	if channel.IsBusy() {
+		atomic.AddUint64(&a.totalFailRqTunnel, 1)
+		return -10.0
+	}
 
 	atomic.AddUint64(&a.totalTxAttempts, 1)
 	msg := item.message
