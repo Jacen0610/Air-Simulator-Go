@@ -359,6 +359,11 @@ func (a *Aircraft) updateRLState(comms *CommunicationSystem) {
 
 // Step 函数: 执行一步决策并返回奖励
 func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 {
+	// [核心修复] 在Step开始时，总是先重置上一步的碰撞标志
+	a.rlStateMutex.Lock()
+	a.lastCollision = false
+	a.rlStateMutex.Unlock()
+
 	a.updateRLState(comms)
 
 	reward := float32(0)
@@ -417,13 +422,9 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 	// [修改] 使用全局可控的随机数生成器
 	time.Sleep(time.Duration(10+config.GetSimRand().Intn(41)) * time.Microsecond)
 
-	a.rlStateMutex.Lock()
-	a.lastCollision = false // Reset collision flag at every send attempt
-	a.rlStateMutex.Unlock()
-
 	if channel.IsBusy() {
 		atomic.AddUint64(&a.totalFailRqTunnel, 1)
-		return -5.0
+		return -10.0
 	}
 
 	atomic.AddUint64(&a.totalTxAttempts, 1)
@@ -470,7 +471,7 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 		a.lastCollision = true
 		a.rlStateMutex.Unlock()
 
-		return -10.0
+		return -15.0
 	}
 }
 
