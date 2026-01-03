@@ -457,6 +457,9 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 			exponent := -1.4 * timeDiff * timeDiff
 			reward = 49.0*math.Exp(exponent) + 1.0
 		}
+		if waitTimeSeconds < 0.7 {
+			reward += 10
+		}
 
 		return float32(reward)
 	} else {
