@@ -395,13 +395,13 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 		secondsWaiting := float32(time.Since(itemToSend.enqueueTime).Seconds())
 
 		var waitTimePenalty float32
-		if secondsWaiting <= 5.0 {
+		if secondsWaiting <= 3.0 {
 			// 5秒内保持线性，给 Agent 一个正常的启动缓冲
 			waitTimePenalty = waitTimeFactor * secondsWaiting
 		} else {
 			// 【关键】5秒后惩罚开始“加速”，使用 1.2 次幂
 			// 这样 30s 时的惩罚将远大于 5s，逼迫 Agent 必须在此时寻找时隙发出
-			waitTimePenalty = waitTimeFactor * (5.0 + float32(math.Pow(float64(secondsWaiting-5.0), 1.2)))
+			waitTimePenalty = waitTimeFactor * (5.0 + float32(math.Pow(float64(secondsWaiting-3.0), 1.2)))
 		}
 		reward -= waitTimePenalty
 
@@ -423,7 +423,7 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 
 	if channel.IsBusy() {
 		atomic.AddUint64(&a.totalFailRqTunnel, 1)
-		return -10.0
+		return -5.0
 	}
 
 	atomic.AddUint64(&a.totalTxAttempts, 1)
@@ -467,7 +467,7 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 		a.lastCollision = true
 		a.rlStateMutex.Unlock()
 
-		return -25.0
+		return -10.0
 	}
 }
 
