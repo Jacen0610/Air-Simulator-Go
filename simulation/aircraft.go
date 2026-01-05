@@ -400,7 +400,7 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 		secondsWaiting := float32(time.Since(itemToSend.enqueueTime).Seconds())
 
 		var waitTimePenalty float32
-		if secondsWaiting <= 3.0 {
+		if secondsWaiting <= 1.0 {
 			// 5秒内保持线性，给 Agent 一个正常的启动缓冲
 			waitTimePenalty = waitTimeFactor * secondsWaiting
 		} else {

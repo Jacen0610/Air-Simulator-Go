@@ -11,7 +11,7 @@ import (
 
 const (
 	// jamTime 定义了在发生碰撞后，信道因信号混乱而保持不可用的时间。
-	jamTime = 440 * time.Millisecond
+	jamTime = 200 * time.Millisecond
 )
 
 // Channel 模拟一个共享的物理通信信道。
