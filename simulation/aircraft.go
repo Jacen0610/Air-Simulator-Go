@@ -406,7 +406,7 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 		} else {
 			// 【关键】5秒后惩罚开始“加速”，使用 1.2 次幂
 			// 这样 30s 时的惩罚将远大于 5s，逼迫 Agent 必须在此时寻找时隙发出
-			waitTimePenalty = waitTimeFactor * (5.0 + float32(math.Pow(float64(secondsWaiting-3.0), 1.2)))
+			waitTimePenalty = waitTimeFactor * (5.0 + float32(math.Pow(float64(secondsWaiting-1.0), 1.2)))
 		}
 		reward -= waitTimePenalty
 
