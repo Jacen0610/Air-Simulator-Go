@@ -119,13 +119,13 @@ func (g *TrafficGenerator) setTickerForCurrentMode(ticker **time.Ticker) {
 
 	switch g.currentMode {
 	case ModeBurst: // [新] 突发模式，流量极度密集
-		baseInterval = 60 * time.Millisecond * config.BaseIntervalMultiple
-		jitterRange = 30 * time.Millisecond // 间隔在 40ms ~ 70ms
+		baseInterval = 220 * time.Millisecond * config.BaseIntervalMultiple
+		jitterRange = 80 * time.Millisecond // 间隔在 40ms ~ 70ms
 	case ModePeak: // 高峰期，非常密集
-		baseInterval = 150 * time.Millisecond * config.BaseIntervalMultiple
+		baseInterval = 300 * time.Millisecond * config.BaseIntervalMultiple
 		jitterRange = 100 * time.Millisecond // 间隔在 150ms ~ 250ms
 	case ModeStable: // 平稳期，中等密度
-		baseInterval = 600 * time.Millisecond * config.BaseIntervalMultiple
+		baseInterval = 800 * time.Millisecond * config.BaseIntervalMultiple
 		jitterRange = 400 * time.Millisecond // 间隔在 600ms ~ 1000ms
 	case ModeLow: // 低谷期，非常稀疏
 		baseInterval = 3 * time.Second
@@ -182,7 +182,7 @@ func (g *TrafficGenerator) attemptSendCSMA() {
 	}
 
 	msg := g.messageQueue[0]
-	p := 0.2
+	p := 0.5
 
 	if g.commsSystem.PrimaryChannel.IsBusy() {
 		return
@@ -191,7 +191,7 @@ func (g *TrafficGenerator) attemptSendCSMA() {
 	// [修改] 使用全局可控的随机数生成器
 	if config.GetSimRand().Float64() < p {
 		time.Sleep(time.Duration(10+config.GetSimRand().Intn(41)) * time.Microsecond)
-		transmitted := g.commsSystem.PrimaryChannel.AttemptTransmit(msg, g.ID, 40*time.Millisecond)
+		transmitted := g.commsSystem.PrimaryChannel.AttemptTransmit(msg, g.ID, 200*time.Millisecond)
 		if transmitted {
 			g.messageQueue = g.messageQueue[1:]
 		}
