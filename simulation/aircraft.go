@@ -228,15 +228,17 @@ func (a *Aircraft) GetObservation(comms *CommunicationSystem, simStartTime time.
 	if queueLen > 0 {
 		waitTime = float32(now.Sub(topMsgEnqueueTime).Seconds())
 	}
-	if waitTime > 5.0 {
-		waitTime = 5.0
+	if waitTime > 10.0 {
+		waitTime = 10.0
 	}
+	waitTime /= 10.0
 
 	// 8. q_size (归一化)
 	qSize := float32(queueLen)
-	if qSize > 5.0 {
-		qSize = 5.0
+	if qSize > 10.0 {
+		qSize = 10.0
 	}
+	qSize /= 10.0
 
 	// 9. last_act
 	lastActFloat := float32(lastAct)
@@ -250,11 +252,7 @@ func (a *Aircraft) GetObservation(comms *CommunicationSystem, simStartTime time.
 	// 11. cycle_pos (归一化)
 	cyclePos := float32(math.Mod(now.Sub(simStartTime).Seconds(), 360.0) / 360.0)
 
-	// 12. dt_step (归一化)
-	if dtStep > 0.5 {
-		dtStep = 0.5
-	}
-	dtStep /= 0.5
+	dtStep = min(dtStep/0.01, 1.0)
 
 	return AgentObservation{
 		HasData:  hasData,
