@@ -375,38 +375,32 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 
 	if itemToSend == nil {
 		if action == ActionSend {
-			reward -= 10.0
-		} else {
-			reward += 1.0
+			return -5.0 // 无效发送惩罚减半，保持比例
 		}
-		return reward
+		return 0.001 // 空仓等待不给分，防止摆烂
 	}
 
 	switch action {
 	case ActionWait:
-		//if comms.PrimaryChannel.IsBusy() {
-		//	reward += 0.1
-		//}
 
-		const queuePenaltyFactor = 2.0
+		const queuePenaltyFactor = 3.0 // 稍微加大
 		a.outboundMutex.RLock()
 		queueLen := float32(len(a.outboundQueue))
 		a.outboundMutex.RUnlock()
-		QueuePenalty := queuePenaltyFactor * float32(math.Log1p(float64(queueLen)))
-		reward -= QueuePenalty
+		// 使用线性+对数，防止大队列时彻底放弃
+		reward -= queuePenaltyFactor * float32(math.Log1p(float64(queueLen)))
 
-		// 2. 等待时间惩罚：【核心修改】取消封顶，引入指数/幂次增长
-		const waitTimeFactor = 1.0
+		// --- 修正3：激进的等待时间惩罚 ---
+		const waitTimeFactor = 5.0 // 显著提升，让 Agent 感到肉疼
 		secondsWaiting := float32(time.Since(itemToSend.enqueueTime).Seconds())
 
 		var waitTimePenalty float32
-		if secondsWaiting <= 1.0 {
-			// 5秒内保持线性，给 Agent 一个正常的启动缓冲
+		if secondsWaiting <= 0.5 { // 缩短缓冲期，从 1.0s 降到 0.5s
 			waitTimePenalty = waitTimeFactor * secondsWaiting
 		} else {
-			// 【关键】5秒后惩罚开始“加速”，使用 1.2 次幂
-			// 这样 30s 时的惩罚将远大于 5s，逼迫 Agent 必须在此时寻找时隙发出
-			waitTimePenalty = waitTimeFactor * (5.0 + float32(math.Pow(float64(secondsWaiting-1.0), 1.2)))
+			// 加速惩罚：一旦超过 0.5s，让惩罚迅速积累
+			diff := float64(secondsWaiting - 0.5)
+			waitTimePenalty = waitTimeFactor * (0.5 + float32(math.Pow(diff, 1.2)))
 		}
 		reward -= waitTimePenalty
 
@@ -424,7 +418,7 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 
 	if channel.IsBusy() {
 		atomic.AddUint64(&a.totalFailRqTunnel, 1)
-		return -10.0
+		return -8.0
 	}
 
 	atomic.AddUint64(&a.totalTxAttempts, 1)
@@ -447,22 +441,26 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 		}
 		a.ackWaiters.Store(msg.GetBaseMessage().MessageID, waiter)
 
-		waitTimeSeconds := waitTime.Seconds()
+		waitTimeSeconds := time.Since(item.enqueueTime).Seconds()
 		optimalTime := 0.4
-		var reward float64
+		var finalReward float64
 
+		// 修正4：压缩成功奖励到 [1, 15] 范围
 		if waitTimeSeconds <= optimalTime {
-			reward = 50.0
+			finalReward = 15.0
 		} else {
+			// 指数衰减：从 15 掉向 1
 			timeDiff := waitTimeSeconds - optimalTime
-			exponent := -1.4 * timeDiff * timeDiff
-			reward = 49.0*math.Exp(exponent) + 1.0
-		}
-		if waitTimeSeconds < 0.5 {
-			reward += 10
+			exponent := -1.0 * timeDiff * timeDiff // 稍微放宽衰减速度
+			finalReward = 14.0*math.Exp(exponent) + 1.0
 		}
 
-		return float32(reward)
+		// 额外的时效奖金（保持比例）
+		if waitTimeSeconds < 0.5 {
+			finalReward += 5.0
+		}
+
+		return float32(finalReward)
 	} else {
 		atomic.AddUint64(&a.totalCollisions, 1)
 		log.Printf("💥 [飞机 %s] 发送报文 (ID: %s) 时失败(碰撞)。", a.CurrentFlightID, msg.GetBaseMessage().MessageID)
