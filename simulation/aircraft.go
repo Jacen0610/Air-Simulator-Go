@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"math"
+	"math/rand"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -80,6 +81,9 @@ type Aircraft struct {
 	channelStateHistory []channelStateEvent // 5, 6. ratio_1s, ratio_01s
 	lastCollision       bool                // 10. is_coll
 	rlStateMutex        sync.RWMutex
+
+	// [新增] 独立的随机数生成器
+	rng *rand.Rand // 用于控制发送时的微观随机延迟 (Offset: 3)
 }
 
 // NewAircraft 创建一个航空器实例的构造函数
@@ -97,6 +101,8 @@ func NewAircraft(icaoAddr, reg, aircraftType, manufacturer, serialNum, airlineCo
 		outboundQueue:           make([]outboxItem, 0, 10),
 		ackWaiters:              sync.Map{},
 		waitTimes:               make([]time.Duration, 0, 100),
+		// [新增] 初始化独立的RNG
+		rng: config.NewRand(3),
 	}
 	a.Reset()
 	return a
@@ -412,7 +418,7 @@ func (a *Aircraft) Step(action AgentAction, comms *CommunicationSystem) float32 
 func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) float32 {
 	atomic.AddUint64(&a.totalRqTunnel, 1)
 	// [修改] 使用全局可控的随机数生成器
-	time.Sleep(time.Duration(10+config.GetSimRand().Intn(41)) * time.Microsecond)
+	time.Sleep(time.Duration(10+a.rng.Intn(41)) * time.Microsecond)
 
 	if channel.IsBusy() {
 		atomic.AddUint64(&a.totalFailRqTunnel, 1)
@@ -439,7 +445,7 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 		}
 		a.ackWaiters.Store(msg.GetBaseMessage().MessageID, waiter)
 
-		waitTimeSeconds := time.Since(item.enqueueTime).Seconds()
+		waitTimeSeconds := waitTime.Seconds()
 		optimalTime := 0.4
 		var finalReward float64
 

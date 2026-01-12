@@ -4,6 +4,7 @@ import (
 	"Air-Simulator/config"
 	"fmt"
 	"log"
+	"math/rand"
 	"sync"
 	"time"
 )
@@ -31,6 +32,10 @@ type TrafficGenerator struct {
 	wg           sync.WaitGroup
 	messageQueue []ACARSMessageInterface
 	queueMutex   sync.Mutex
+
+	// [新增] 独立的随机数生成器
+	trafficRng *rand.Rand // 用于控制流量生成的宏观节奏 (Offset: 1)
+	csmaRng    *rand.Rand // 用于控制CSMA发送的微观随机性 (Offset: 2)
 }
 
 // NewTrafficGenerator 创建一个新的背景流量生成器实例
@@ -40,7 +45,10 @@ func NewTrafficGenerator(commsSystem *CommunicationSystem) *TrafficGenerator {
 		commsSystem:  commsSystem,
 		currentMode:  ModeStable,
 		stopChan:     make(chan struct{}),
-		messageQueue: make([]ACARSMessageInterface, 0, 20), // 增加队列容量以应对突发
+		messageQueue: make([]ACARSMessageInterface, 0, 20),
+		// [新增] 初始化独立的RNG
+		trafficRng: config.NewRand(1),
+		csmaRng:    config.NewRand(2),
 	}
 }
 
@@ -132,8 +140,8 @@ func (g *TrafficGenerator) setTickerForCurrentMode(ticker **time.Ticker) {
 		jitterRange = 2 * time.Second // 间隔在 3s ~ 5s
 	}
 
-	// [修改] 使用全局可控的随机数生成器
-	randomJitter := time.Duration(config.GetSimRand().Int63n(int64(jitterRange)))
+	// [修改] 使用 trafficRng
+	randomJitter := time.Duration(g.trafficRng.Int63n(int64(jitterRange)))
 	interval := baseInterval + randomJitter
 
 	*ticker = time.NewTicker(interval)
@@ -188,9 +196,9 @@ func (g *TrafficGenerator) attemptSendCSMA() {
 		return
 	}
 
-	// [修改] 使用全局可控的随机数生成器
-	if config.GetSimRand().Float64() < p {
-		time.Sleep(time.Duration(10+config.GetSimRand().Intn(41)) * time.Microsecond)
+	// [修改] 使用 csmaRng
+	if g.csmaRng.Float64() < p {
+		time.Sleep(time.Duration(10+g.csmaRng.Intn(41)) * time.Microsecond)
 		transmitted := g.commsSystem.PrimaryChannel.AttemptTransmit(msg, g.ID, 200*time.Millisecond)
 		if transmitted {
 			g.messageQueue = g.messageQueue[1:]
