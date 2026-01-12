@@ -62,6 +62,11 @@ func main() {
 	trafficGenerator.Start() // 启动流量生成器
 	log.Printf("🚦 背景流量生成器已启动。")
 
+	// [新增] 将流量生成器的状态查询方法注入到每个飞机实例中
+	for _, aircraft := range aircraftList {
+		aircraft.SetTrafficStatusProvider(trafficGenerator.GetCurrentStatus)
+	}
+
 	// --- 4. 创建数据收集器实例 ---
 	channelsToMonitor := []*simulation.Channel{primaryChannel}
 	if config.EnableBackupChannel {

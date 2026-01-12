@@ -36,6 +36,12 @@ type TrafficGenerator struct {
 	// [新增] 独立的随机数生成器
 	trafficRng *rand.Rand // 用于控制流量生成的宏观节奏 (Offset: 1)
 	csmaRng    *rand.Rand // 用于控制CSMA发送的微观随机性 (Offset: 2)
+
+	// [新增] 标志位：是否是第一次重置
+	isFirstReset bool
+
+	// [新增] 记录当前的生成间隔
+	currentInterval time.Duration
 }
 
 // NewTrafficGenerator 创建一个新的背景流量生成器实例
@@ -49,6 +55,8 @@ func NewTrafficGenerator(commsSystem *CommunicationSystem) *TrafficGenerator {
 		// [新增] 初始化独立的RNG
 		trafficRng: config.NewRand(1),
 		csmaRng:    config.NewRand(2),
+		// [新增] 初始化标志位
+		isFirstReset: true,
 	}
 }
 
@@ -110,13 +118,31 @@ func (g *TrafficGenerator) Reset() {
 	g.queueMutex.Lock()
 	g.messageQueue = make([]ACARSMessageInterface, 0, 20)
 	g.queueMutex.Unlock()
+
+	// [修改] 仅在第一次重置时强制对齐随机数种子
+	if g.isFirstReset {
+		g.trafficRng = config.NewRand(1)
+		g.csmaRng = config.NewRand(2)
+		g.isFirstReset = false
+		log.Println("🚦 [流量生成器] 首次重置：随机数种子已强制对齐。")
+	} else {
+		log.Println("🚦 [流量生成器] 后续重置：保留随机数状态以增加多样性。")
+	}
+
 	g.Start()
+}
+
+// [新增] GetCurrentStatus 返回当前的流量模式和生成间隔
+func (g *TrafficGenerator) GetCurrentStatus() (TrafficMode, time.Duration) {
+	g.modeMutex.RLock()
+	defer g.modeMutex.RUnlock()
+	return g.currentMode, g.currentInterval
 }
 
 // [大幅修改] setTickerForCurrentMode 根据当前流量模式设置消息生成速率
 func (g *TrafficGenerator) setTickerForCurrentMode(ticker **time.Ticker) {
-	g.modeMutex.RLock()
-	defer g.modeMutex.RUnlock()
+	g.modeMutex.Lock() // [修改] 改为写锁，因为要更新 currentInterval
+	defer g.modeMutex.Unlock()
 
 	if *ticker != nil {
 		(*ticker).Stop()
@@ -143,6 +169,9 @@ func (g *TrafficGenerator) setTickerForCurrentMode(ticker **time.Ticker) {
 	// [修改] 使用 trafficRng
 	randomJitter := time.Duration(g.trafficRng.Int63n(int64(jitterRange)))
 	interval := baseInterval + randomJitter
+
+	// [新增] 更新当前间隔
+	g.currentInterval = interval
 
 	*ticker = time.NewTicker(interval)
 	log.Printf("🚦 [流量生成器 %s] 模式已切换到 %s，消息生成间隔: %s", g.ID, g.currentMode, interval)

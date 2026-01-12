@@ -32,6 +32,13 @@ type outboxItem struct {
 	isRetransmission bool // 标记此条目是否为重传
 }
 
+// [新增] CollisionRecord 记录单次碰撞的详细信息
+type CollisionRecord struct {
+	Time            time.Time
+	TrafficMode     string
+	TrafficInterval time.Duration
+}
+
 // Aircraft 结构体定义了一架航空器的所有关键参数
 type Aircraft struct {
 	ICAOAddress  string `json:"icaoAddress"`
@@ -84,6 +91,20 @@ type Aircraft struct {
 
 	// [新增] 独立的随机数生成器
 	rng *rand.Rand // 用于控制发送时的微观随机延迟 (Offset: 3)
+
+	// [新增] 标志位：是否是第一次重置
+	isFirstReset bool
+
+	// [新增] 碰撞记录
+	collisionRecords      []CollisionRecord
+	collisionRecordsMutex sync.Mutex
+
+	// [新增] 无效动作记录
+	invalidActionRecords      []CollisionRecord
+	invalidActionRecordsMutex sync.Mutex
+
+	// [新增] 获取背景流量状态的回调函数
+	trafficStatusProvider func() (TrafficMode, time.Duration)
 }
 
 // NewAircraft 创建一个航空器实例的构造函数
@@ -103,9 +124,37 @@ func NewAircraft(icaoAddr, reg, aircraftType, manufacturer, serialNum, airlineCo
 		waitTimes:               make([]time.Duration, 0, 100),
 		// [新增] 初始化独立的RNG
 		rng: config.NewRand(3),
+		// [新增] 初始化标志位
+		isFirstReset:         true,
+		collisionRecords:     make([]CollisionRecord, 0),
+		invalidActionRecords: make([]CollisionRecord, 0),
 	}
-	a.Reset()
 	return a
+}
+
+// [新增] SetTrafficStatusProvider 设置获取背景流量状态的回调函数
+func (a *Aircraft) SetTrafficStatusProvider(provider func() (TrafficMode, time.Duration)) {
+	a.trafficStatusProvider = provider
+}
+
+// [新增] GetCollisionRecords 获取所有的碰撞记录
+func (a *Aircraft) GetCollisionRecords() []CollisionRecord {
+	a.collisionRecordsMutex.Lock()
+	defer a.collisionRecordsMutex.Unlock()
+	// 返回副本以保证线程安全
+	records := make([]CollisionRecord, len(a.collisionRecords))
+	copy(records, a.collisionRecords)
+	return records
+}
+
+// [新增] GetInvalidActionRecords 获取所有的无效动作记录
+func (a *Aircraft) GetInvalidActionRecords() []CollisionRecord {
+	a.invalidActionRecordsMutex.Lock()
+	defer a.invalidActionRecordsMutex.Unlock()
+	// 返回副本以保证线程安全
+	records := make([]CollisionRecord, len(a.invalidActionRecords))
+	copy(records, a.invalidActionRecords)
+	return records
 }
 
 // EnqueueMessage 将一个新消息放入飞机的发件箱。
@@ -422,6 +471,19 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 
 	if channel.IsBusy() {
 		atomic.AddUint64(&a.totalFailRqTunnel, 1)
+
+		// [新增] 记录无效动作事件
+		if a.trafficStatusProvider != nil {
+			mode, interval := a.trafficStatusProvider()
+			a.invalidActionRecordsMutex.Lock()
+			a.invalidActionRecords = append(a.invalidActionRecords, CollisionRecord{
+				Time:            time.Now(),
+				TrafficMode:     string(mode),
+				TrafficInterval: interval,
+			})
+			a.invalidActionRecordsMutex.Unlock()
+		}
+
 		return -8.0
 	}
 
@@ -473,6 +535,18 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 		a.lastCollision = true
 		a.rlStateMutex.Unlock()
 
+		// [新增] 记录碰撞事件
+		if a.trafficStatusProvider != nil {
+			mode, interval := a.trafficStatusProvider()
+			a.collisionRecordsMutex.Lock()
+			a.collisionRecords = append(a.collisionRecords, CollisionRecord{
+				Time:            time.Now(),
+				TrafficMode:     string(mode),
+				TrafficInterval: interval,
+			})
+			a.collisionRecordsMutex.Unlock()
+		}
+
 		return -15.0
 	}
 }
@@ -509,6 +583,25 @@ func (a *Aircraft) Reset() {
 	a.isCurrentlyBusy = false                                 // Assume channel is initially idle
 	a.channelStateHistory = make([]channelStateEvent, 0, 100) // Approx 2s of history at high freq
 	a.lastCollision = false
+
+	// [修改] 仅在第一次重置时强制对齐随机数种子
+	if a.isFirstReset {
+		a.rng = config.NewRand(3)
+		a.isFirstReset = false
+		log.Println("✈️  [飞机] 首次重置：随机数种子已强制对齐。")
+	} else {
+		log.Println("✈️  [飞机] 后续重置：保留随机数状态以增加多样性。")
+	}
+
+	// [新增] 重置碰撞记录
+	a.collisionRecordsMutex.Lock()
+	a.collisionRecords = make([]CollisionRecord, 0)
+	a.collisionRecordsMutex.Unlock()
+
+	// [新增] 重置无效动作记录
+	a.invalidActionRecordsMutex.Lock()
+	a.invalidActionRecords = make([]CollisionRecord, 0)
+	a.invalidActionRecordsMutex.Unlock()
 }
 
 // GetWaitTimes 返回一个线程安全的等待时间副本
