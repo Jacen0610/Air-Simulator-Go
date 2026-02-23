@@ -32,9 +32,10 @@ type outboxItem struct {
 	isRetransmission bool // 标记此条目是否为重传
 }
 
-// [新增] CollisionRecord 记录单次碰撞的详细信息
+// [修改] CollisionRecord 记录单次碰撞的详细信息
 type CollisionRecord struct {
-	Time            time.Time
+	EpisodeID       int           // [新增] Episode 编号
+	TimeOffset      time.Duration // [新增] 相对于 Episode 开始的时间偏移量
 	TrafficMode     string
 	TrafficInterval time.Duration
 }
@@ -105,6 +106,10 @@ type Aircraft struct {
 
 	// [新增] 获取背景流量状态的回调函数
 	trafficStatusProvider func() (TrafficMode, time.Duration)
+
+	// [新增] 记录当前 Episode 信息
+	currentEpisodeID int
+	simStartTime     time.Time
 }
 
 // NewAircraft 创建一个航空器实例的构造函数
@@ -129,6 +134,14 @@ func NewAircraft(icaoAddr, reg, aircraftType, manufacturer, serialNum, airlineCo
 		collisionRecords:     make([]CollisionRecord, 0),
 		invalidActionRecords: make([]CollisionRecord, 0),
 	}
+	// 注意：NewAircraft 不再直接调用 Reset，因为 Reset 现在需要参数。
+	// 初始化时可以给一个默认值，或者由 Server 在第一次 Reset 时正确设置。
+	// 为了保持一致性，这里可以调用一个内部的 initReset，或者暂时不调用，等待 Server 调用。
+	// 考虑到 Server 会在启动时调用 Reset，这里不调用也是安全的。
+	// 但为了防止未初始化状态，我们可以手动初始化一些字段。
+	a.rlStateMutex.Lock()
+	a.channelStateHistory = make([]channelStateEvent, 0, 100)
+	a.rlStateMutex.Unlock()
 	return a
 }
 
@@ -477,7 +490,8 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 			mode, interval := a.trafficStatusProvider()
 			a.invalidActionRecordsMutex.Lock()
 			a.invalidActionRecords = append(a.invalidActionRecords, CollisionRecord{
-				Time:            time.Now(),
+				EpisodeID:       a.currentEpisodeID,
+				TimeOffset:      time.Since(a.simStartTime),
 				TrafficMode:     string(mode),
 				TrafficInterval: interval,
 			})
@@ -540,7 +554,8 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 			mode, interval := a.trafficStatusProvider()
 			a.collisionRecordsMutex.Lock()
 			a.collisionRecords = append(a.collisionRecords, CollisionRecord{
-				Time:            time.Now(),
+				EpisodeID:       a.currentEpisodeID,
+				TimeOffset:      time.Since(a.simStartTime),
 				TrafficMode:     string(mode),
 				TrafficInterval: interval,
 			})
@@ -552,7 +567,8 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 }
 
 // Reset 重置飞机状态
-func (a *Aircraft) Reset() {
+// [修改] 接收 episodeID 和 startTime 参数
+func (a *Aircraft) Reset(episodeID int, startTime time.Time) {
 	atomic.StoreUint64(&a.totalTxAttempts, 0)
 	atomic.StoreUint64(&a.totalCollisions, 0)
 	atomic.StoreUint64(&a.successfulTx, 0)
@@ -602,6 +618,10 @@ func (a *Aircraft) Reset() {
 	a.invalidActionRecordsMutex.Lock()
 	a.invalidActionRecords = make([]CollisionRecord, 0)
 	a.invalidActionRecordsMutex.Unlock()
+
+	// [新增] 更新当前 Episode 信息
+	a.currentEpisodeID = episodeID
+	a.simStartTime = startTime
 }
 
 // GetWaitTimes 返回一个线程安全的等待时间副本

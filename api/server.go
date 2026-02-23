@@ -15,7 +15,7 @@ import (
 type agent interface {
 	Step(action simulation.AgentAction, comms *simulation.CommunicationSystem) float32
 	GetObservation(comms *simulation.CommunicationSystem, simStartTime time.Time) simulation.AgentObservation
-	Reset()
+	Reset(episodeID int, startTime time.Time) // [修改] 增加参数
 }
 
 // Server 结构体实现了 gRPC 接口。
@@ -78,7 +78,7 @@ func (s *Server) Reset(ctx context.Context, req *proto.ResetRequest) (*proto.Res
 
 	s.simulationStartTime = time.Now() // [修改] 记录新的模拟开始时间
 	s.trafficGenerator.Reset()
-	s.aircraftAgent.Reset()
+	s.aircraftAgent.Reset(int(currentEpisode), s.simulationStartTime) // [修改] 传递参数
 	s.commsSystem.PrimaryChannel.ResetStats()
 	if s.commsSystem.BackupChannel != nil {
 		s.commsSystem.BackupChannel.ResetStats()
@@ -107,17 +107,23 @@ func (s *Server) Reset(ctx context.Context, req *proto.ResetRequest) (*proto.Res
 // 将12维的 simulation 层观测状态映射到12维的 proto 层消息结构。
 func mapObservationToProto(obs simulation.AgentObservation) *proto.AgentObservation {
 	return &proto.AgentObservation{
-		HasData:   obs.HasData,
-		IsBusy:    obs.IsBusy,
-		BusyDur:   obs.BusyDur,
-		IdleDur:   obs.IdleDur,
-		Ratio_1S:  obs.Ratio1s,
-		Ratio_01S: obs.Ratio01s,
-		WaitTime:  obs.WaitTime,
-		QSize:     obs.QSize,
-		LastAct:   obs.LastAct,
-		IsColl:    obs.IsColl,
-		CyclePos:  obs.CyclePos,
-		DtStep:    obs.DtStep,
+		HasData:                   obs.HasData,
+		IsBusy:                    obs.IsBusy,
+		BusyDur:                   obs.BusyDur,
+		IdleDur:                   obs.IdleDur,
+		Ratio_1S:                  obs.Ratio1s,
+		Ratio_01S:                 obs.Ratio01s,
+		WaitTime:                  obs.WaitTime,
+		QSize:                     obs.QSize,
+		LastAct:                   obs.LastAct,
+		IsColl:                    obs.IsColl,
+		CyclePos:                  obs.CyclePos,
+		DtStep:                    obs.DtStep,
+		OutboundQueueLength:       obs.OutboundQueueLength,
+		TopMessageWaitTimeSeconds: obs.TopMessageWaitTimeSeconds,
+		ConsecutiveIdleSteps:      obs.ConsecutiveIdleSteps,
+		LastSendCausedCollision:   obs.LastSendCausedCollision,
+		StepsSinceLastCollision:   obs.StepsSinceLastCollision,
+		ChannelBusyRatio:          obs.ChannelBusyRatio,
 	}
 }
