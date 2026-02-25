@@ -54,6 +54,14 @@ type PriorityPMap map[Priority]float64
 // false: 切换为单信道模式。
 const EnableBackupChannel = false
 
+// [新增] 流量生成器配置
+const (
+	// EnableTrafficWaveMode 控制背景流量模式的切换方式。
+	// true: 波浪式循环 (Low <-> Stable <-> Peak <-> Burst)
+	// false: 突变式循环 (Low -> Stable -> Peak -> Burst -> Low)
+	EnableTrafficWaveMode = true
+)
+
 // ===================================================================
 //                       P-Persistence & Channel Switching
 // ===================================================================
