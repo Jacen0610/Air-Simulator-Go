@@ -264,7 +264,7 @@ func (g *TrafficGenerator) attemptSendCSMA() {
 
 	if g.csmaRng.Float64() < p {
 		time.Sleep(time.Duration(10+g.csmaRng.Intn(41)) * time.Microsecond)
-		transmitted := g.commsSystem.PrimaryChannel.AttemptTransmit(msg, g.ID, 200*time.Millisecond)
+		transmitted, _ := g.commsSystem.PrimaryChannel.AttemptTransmit(msg, g.ID, 200*time.Millisecond)
 		if transmitted {
 			g.messageQueue = g.messageQueue[1:]
 		}
