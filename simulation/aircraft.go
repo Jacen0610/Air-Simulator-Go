@@ -38,6 +38,7 @@ type CollisionRecord struct {
 	TimeOffset      time.Duration // [新增] 相对于 Episode 开始的时间偏移量
 	TrafficMode     string
 	TrafficInterval time.Duration
+	OccupierID      string // [新增] 碰撞源ID
 }
 
 // Aircraft 结构体定义了一架航空器的所有关键参数
@@ -494,6 +495,7 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 				TimeOffset:      time.Since(a.simStartTime),
 				TrafficMode:     string(mode),
 				TrafficInterval: interval,
+				OccupierID:      "CHANNEL_BUSY", // 无效动作时，信道被占用
 			})
 			a.invalidActionRecordsMutex.Unlock()
 		}
@@ -504,7 +506,10 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 	atomic.AddUint64(&a.totalTxAttempts, 1)
 	msg := item.message
 
-	if channel.AttemptTransmit(msg, a.CurrentFlightID, config.TransmissionTime) {
+	// [修改] 接收 AttemptTransmit 返回的 occupier ID
+	success, occupier := channel.AttemptTransmit(msg, a.CurrentFlightID, config.TransmissionTime)
+
+	if success {
 		waitTime := time.Since(item.enqueueTime)
 		a.totalWaitTimeNs.Add(waitTime.Nanoseconds())
 		a.waitTimesMutex.Lock()
@@ -543,7 +548,7 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 		return float32(finalReward)
 	} else {
 		atomic.AddUint64(&a.totalCollisions, 1)
-		log.Printf("💥 [飞机 %s] 发送报文 (ID: %s) 时失败(碰撞)。", a.CurrentFlightID, msg.GetBaseMessage().MessageID)
+		log.Printf("💥 [飞机 %s] 发送报文 (ID: %s) 时失败(碰撞)。碰撞源: %s", a.CurrentFlightID, msg.GetBaseMessage().MessageID, occupier)
 
 		a.rlStateMutex.Lock()
 		a.lastCollision = true
@@ -558,6 +563,7 @@ func (a *Aircraft) attemptSendOnChannel(item *outboxItem, channel *Channel) floa
 				TimeOffset:      time.Since(a.simStartTime),
 				TrafficMode:     string(mode),
 				TrafficInterval: interval,
+				OccupierID:      occupier, // [新增] 记录碰撞源
 			})
 			a.collisionRecordsMutex.Unlock()
 		}

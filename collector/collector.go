@@ -1,4 +1,3 @@
-// C:/workspace/go/Air-Simulator-Go/collector/collector.go
 package collector
 
 import (
@@ -95,15 +94,15 @@ func (dc *DataCollector) writeHeaders(f *excelize.File, aircraftSheet, channelSh
 
 // writeCollisionHeaders 写入碰撞记录表头
 func (dc *DataCollector) writeCollisionHeaders(f *excelize.File, sheetName string) {
-	// [修改] 表头改为 Episode 和 时间偏移
-	headers := []string{"航班号", "Episode", "时间偏移", "背景流量模式", "背景流量间隔 (ms)"}
+	// [修改] 表头增加 OccupierID
+	headers := []string{"航班号", "Episode", "时间偏移", "背景流量模式", "背景流量间隔 (ms)", "碰撞源ID"}
 	_ = f.SetSheetRow(sheetName, "A1", &headers)
 }
 
 // writeInvalidActionHeaders 写入无效动作记录表头
 func (dc *DataCollector) writeInvalidActionHeaders(f *excelize.File, sheetName string) {
-	// [修改] 表头改为 Episode 和 时间偏移
-	headers := []string{"航班号", "Episode", "时间偏移", "背景流量模式", "背景流量间隔 (ms)"}
+	// [修改] 表头增加 OccupierID
+	headers := []string{"航班号", "Episode", "时间偏移", "背景流量模式", "背景流量间隔 (ms)", "占用者ID"}
 	_ = f.SetSheetRow(sheetName, "A1", &headers)
 }
 
@@ -119,6 +118,7 @@ func (dc *DataCollector) recordCollisionEvents(f *excelize.File, sheetName strin
 				formatDuration(rec.TimeOffset), // [修改] 使用 TimeOffset 并格式化
 				rec.TrafficMode,
 				float64(rec.TrafficInterval.Milliseconds()),
+				rec.OccupierID, // [新增] 写入碰撞源ID
 			}
 			cell, _ := excelize.CoordinatesToCellName(1, rowIdx)
 			_ = f.SetSheetRow(sheetName, cell, &rowData)
@@ -139,6 +139,7 @@ func (dc *DataCollector) recordInvalidActionEvents(f *excelize.File, sheetName s
 				formatDuration(rec.TimeOffset), // [修改] 使用 TimeOffset 并格式化
 				rec.TrafficMode,
 				float64(rec.TrafficInterval.Milliseconds()),
+				rec.OccupierID, // [新增] 写入占用者ID
 			}
 			cell, _ := excelize.CoordinatesToCellName(1, rowIdx)
 			_ = f.SetSheetRow(sheetName, cell, &rowData)
