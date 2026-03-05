@@ -16,11 +16,10 @@ const (
 
 // Channel 模拟一个共享的物理通信信道。
 type Channel struct {
-	ID              string
-	stateMutex      sync.Mutex
-	isBusy          bool
-	currentSenderID string        // [新增] 记录当前占用信道的发送者ID
-	transmissionID  atomic.Uint64 // 用于识别和作废传输的唯一ID
+	ID             string
+	stateMutex     sync.Mutex
+	isBusy         bool
+	transmissionID atomic.Uint64 // 用于识别和作废传输的唯一ID
 
 	messageQueue  chan ACARSMessageInterface
 	listeners     []chan<- ACARSMessageInterface
@@ -97,21 +96,19 @@ func (c *Channel) AttemptTransmit(msg ACARSMessageInterface, senderID string, tr
 
 	// 如果信道已被占用，则发生碰撞。
 	if c.isBusy {
-		occupier := c.currentSenderID // 获取当前占用者
 		// 通过再次增加ID，使正在进行的传输失效。
 		c.transmissionID.Add(1)
-		log.Printf("💥 [%s] 在繁忙的信道 %s 上尝试传输，引发碰撞！正在进行的传输(由 %s 发起)被破坏。", senderID, c.ID, occupier)
+		log.Printf("💥 [%s] 在繁忙的信道 %s 上尝试传输，引发碰撞！正在进行的传输被破坏。", senderID, c.ID)
 
 		// 启动一个goroutine来处理“拥塞”时间，之后再释放信道。
 		go c.jamChannel()
 
 		c.stateMutex.Unlock()
-		return false, occupier // 本次尝试失败，返回占用者ID
+		return false, "" // 本次尝试失败，返回占用者ID
 	}
 
 	// 信道空闲，我们占用它。
 	c.isBusy = true
-	c.currentSenderID = senderID // [新增] 记录当前发送者
 	c.lastBusyTimestamp = time.Now()
 	c.stateMutex.Unlock()
 
@@ -127,8 +124,7 @@ func (c *Channel) AttemptTransmit(msg ACARSMessageInterface, senderID string, tr
 		// 成功：传输未被中断。
 		c.messageQueue <- msg
 		c.totalMessagesTransmitted.Add(1)
-		c.isBusy = false       // 释放信道
-		c.currentSenderID = "" // [新增] 清除发送者
+		c.isBusy = false // 释放信道
 		busyDuration := time.Since(c.lastBusyTimestamp)
 		c.totalBusyTime += busyDuration
 		if senderID != "BG_TRAFFIC" {
@@ -138,7 +134,7 @@ func (c *Channel) AttemptTransmit(msg ACARSMessageInterface, senderID string, tr
 	} else {
 		// 失败：我们的传输被后续的碰撞所破坏。
 		log.Printf("❌ [%s] 在 %s 上的传输 (传输ID: %d) 被碰撞破坏。当前有效ID: %d。", senderID, c.ID, myID, c.transmissionID.Load())
-		return false, "COLLISION" // 失败，被后续碰撞破坏
+		return false, senderID // 失败，被后续碰撞破坏
 	}
 }
 
@@ -147,7 +143,6 @@ func (c *Channel) jamChannel() {
 	time.Sleep(jamTime)
 	c.stateMutex.Lock()
 	c.isBusy = false
-	c.currentSenderID = "" // [新增] 清除发送者
 	log.Printf("💥 信道 %s 的拥塞状态已清除。", c.ID)
 	c.stateMutex.Unlock()
 }
@@ -190,7 +185,6 @@ func (c *Channel) ResetStats() {
 	c.transmissionID.Store(0)
 	c.totalMessagesTransmitted.Store(0)
 	c.isBusy = false
-	c.currentSenderID = ""
 }
 
 // ChannelRawStats Excel自动统计需要以下两个函数
