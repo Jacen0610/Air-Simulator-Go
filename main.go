@@ -77,7 +77,7 @@ func main() {
 	log.Println("📊 数据收集器已准备就绪。")
 
 	// --- 5. 启动 gRPC 服务器并阻塞主线程 ---
-	listenAddress := fmt.Sprintf(":%s", *port) // [修改] 使用flag的值来构建监听地址
+	listenAddress := fmt.Sprintf("127.0.0.1:%s", *port) // [修改] 明确指定 127.0.0.1
 	lis, err := net.Listen("tcp", listenAddress)
 	if err != nil {
 		log.Fatalf("❌ 无法监听端口 %s: %v", *port, err)
